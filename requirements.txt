@@ -1,0 +1,11 @@
+numpy>=1.26
+SQLAlchemy>=2.0
+psycopg[binary]>=3.1
+python-dotenv>=1.0
+statsmodels>=0.14
+fastapi>=0.115
+uvicorn>=0.30
+joblib>=1.4
+rich>=13.7
+typer>=0.12
+torch>=2.2

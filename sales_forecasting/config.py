@@ -20,8 +20,15 @@ class Settings:
     orders_table: str = os.getenv("ORDERS_TABLE", "orders")
     orders_date_col: str = os.getenv("ORDERS_DATE_COL", "created")
     orders_line_items_col: str = os.getenv("ORDERS_LINE_ITEMS_COL", "line_items")
-    item_product_id_key: str = os.getenv("ITEM_PRODUCT_ID_KEY", "product_id")
+    item_product_id_key: str = os.getenv("ITEM_PRODUCT_ID_KEY", "productId")
     item_quantity_key: str = os.getenv("ITEM_QUANTITY_KEY", "quantity")
+
+    # Additional order-level fields (optional)
+    orders_total_price_col: str = os.getenv("ORDERS_TOTAL_PRICE_COL", "totalPrice")
+    orders_channel_col: str = os.getenv("ORDERS_CHANNEL_COL", "channel")
+    orders_source_name_col: str = os.getenv("ORDERS_SOURCE_NAME_COL", "sourceName")
+    orders_tags_col: str = os.getenv("ORDERS_TAGS_COL", "tags")
+    orders_customer_id_col: str = os.getenv("ORDERS_CUSTOMER_ID_COL", "customerId")
 
     model_dir: Path = Path(os.getenv("MODEL_DIR", "models"))
 

@@ -36,6 +36,11 @@ La tabla esperada se parece a:
 CREATE TABLE public.orders (
   id varchar(255) PRIMARY KEY,
   created timestamptz NOT NULL,
+  "totalPrice" float8 DEFAULT '0'::double precision NOT NULL,
+  channel varchar(255) NOT NULL,
+  "sourceName" varchar(255) NOT NULL,
+  tags jsonb DEFAULT '[]'::jsonb NOT NULL,
+  "customerId" varchar(255) NOT NULL,
   line_items jsonb NOT NULL DEFAULT '[]'::jsonb,
   -- ... otras columnas
 );

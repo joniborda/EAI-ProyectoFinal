@@ -9,6 +9,7 @@ import uvicorn
 
 from .db import (
     fetch_sales_timeseries,
+    fetch_daily_features,
     get_all_product_ids,
     test_connection,
 )
@@ -35,6 +36,7 @@ def train(
     product_id: str = typer.Option(..., help="ID del producto o 'all' (texto)"),
     start_date: Optional[str] = typer.Option(None, help="YYYY-MM-DD (opcional)"),
     end_date: Optional[str] = typer.Option(None, help="YYYY-MM-DD (opcional)"),
+    target: str = typer.Option("quantity", help="Objetivo: quantity|totalPrice"),
 ) -> None:
     """Entrena modelo(s) por producto y guarda en models/."""
     sd = date.fromisoformat(start_date) if start_date else None
@@ -49,14 +51,16 @@ def train(
         ids = [product_id]
 
     for pid in ids:
-        _, y = fetch_sales_timeseries(pid, sd, ed)
+        _, y = fetch_sales_timeseries(pid, sd, ed, target=target)  # type: ignore[arg-type]
+        _, X = fetch_daily_features(pid, sd, ed)
         if y.size == 0:
             typer.secho(f"Sin datos para producto {pid}, se omite.", fg=typer.colors.YELLOW)
             continue
         if model == "sarimax":
-            path = sarimax_train(y, pid)
+            path = sarimax_train(y, pid, target=target)  # type: ignore[arg-type]
         elif model == "rnn":
-            path = rnn_train(y, pid)
+            X_aligned = X[-y.shape[0] :, :] if X.size and X.shape[0] >= y.shape[0] else None
+            path = rnn_train(y, pid, target=target, Xexo=X_aligned)  # type: ignore[arg-type]
         else:
             typer.secho("Modelo no soportado (usar sarimax|rnn)", fg=typer.colors.RED)
             raise typer.Exit(code=3)
@@ -68,17 +72,20 @@ def predict(
     model: str = typer.Option("sarimax", help="Modelo: sarimax|rnn"),
     product_id: str = typer.Option(..., help="ID del producto (texto)"),
     horizon: int = typer.Option(14, help="Días a predecir"),
+    target: str = typer.Option("quantity", help="Objetivo: quantity|totalPrice"),
     out: Optional[Path] = typer.Option(None, help="Archivo CSV de salida"),
 ) -> None:
     """Genera pronóstico para un producto y opcionalmente guarda a CSV."""
     if model == "sarimax":
-        preds = sarimax_forecast(product_id, horizon)
+        preds = sarimax_forecast(product_id, horizon, target=target)  # type: ignore[arg-type]
     elif model == "rnn":
-        _, y = fetch_sales_timeseries(product_id)
+        _, y = fetch_sales_timeseries(product_id, target=target)  # type: ignore[arg-type]
+        _, X = fetch_daily_features(product_id)
         if y.size == 0:
             typer.secho("No hay datos para predecir", fg=typer.colors.RED)
             raise typer.Exit(code=4)
-        preds = rnn_forecast(product_id, horizon, y)
+        X_aligned = X[-y.shape[0] :, :] if X.size and X.shape[0] >= y.shape[0] else None
+        preds = rnn_forecast(product_id, horizon, y, target=target, Xexo=X_aligned)  # type: ignore[arg-type]
     else:
         typer.secho("Modelo no soportado (usar sarimax|rnn)", fg=typer.colors.RED)
         raise typer.Exit(code=3)

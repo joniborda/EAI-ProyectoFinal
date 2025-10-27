@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Tuple
+from typing import Literal, Tuple, Optional
 
 import numpy as np
 import torch
@@ -70,11 +70,15 @@ def train_and_save(
     target: Literal["quantity", "totalPrice"] = "quantity",
     cfg: RNNConfig | None = None,
     Xexo: np.ndarray | None = None,
-) -> Path:
+) -> Optional[Path]:
     if cfg is None:
         cfg = RNNConfig()
     if y.size < cfg.window_size + 1:
-        raise ValueError("Serie demasiado corta para entrenar la RNN.")
+        # Mensaje y retorno vacío para permitir continuar en procesos batch
+        print(
+            f"[RNN] Serie demasiado corta para entrenar (product_id={product_id}, len={y.size}, minimo={cfg.window_size + 1})."
+        )
+        return None
 
     # Ajustar input_size si hay features exógenas
     if Xexo is not None:
@@ -114,7 +118,8 @@ def load_model(product_id: str, target: Literal["quantity", "totalPrice"] = "qua
     if not path.exists():
         raise FileNotFoundError(f"Modelo RNN no encontrado para product_id={product_id}: {path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    payload = torch.load(path, map_location=device)
+    print("device: ", device)
+    payload = torch.load(path, map_location=device, weights_only=False)
     cfg: RNNConfig = payload["cfg"]
     model = SalesLSTM(cfg.input_size, cfg.hidden_size, cfg.num_layers).to(device)
     model.load_state_dict(payload["state_dict"])  # type: ignore[arg-type]
@@ -147,6 +152,9 @@ def forecast(
         x = torch.tensor(x_np, dtype=torch.float32, device=device)
         y_hat = model(x).detach().cpu().numpy().ravel()[0]
         y_hat = max(y_hat, 0.0)
+        print("y_hat", y_hat)
+        print("x", x)
+        print("cfg.input_size", cfg.input_size)
         preds.append(y_hat)
         window = np.roll(window, -1)
         window[-1] = y_hat

@@ -150,6 +150,95 @@ def fetch_sales_timeseries(
     return full_dates, full_qty
 
 
+def fetch_sales_totals_timeseries(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    target: Literal["quantity", "totalPrice"] = "quantity",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Devuelve (dates_np, y_np) agregados diarios a nivel global (todos los productos).
+
+    target:
+        - "quantity": suma de cantidades vendidas (sumatoria de line_items.quantity)
+        - "totalPrice": suma del totalPrice de la orden por día
+    """
+    st = _settings
+
+    def _qi(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    date_col = _qi(st.orders_date_col)
+    table = _qi(st.orders_table)
+    line_items_col = _qi(st.orders_line_items_col)
+    total_price_col = _qi(st.orders_total_price_col)
+
+    where: list[str] = []
+    params: dict[str, object] = {}
+    if start_date is not None:
+        where.append(f"{date_col} >= :start_date")
+        params["start_date"] = start_date
+    if end_date is not None:
+        where.append(f"{date_col} <= :end_date")
+        params["end_date"] = end_date
+    where_sql = (" AND ".join(where)) if where else "TRUE"
+
+    if target == "quantity":
+        # Sumar cantidades de todos los line_items por día.
+        sql = text(
+            f"""
+            SELECT (DATE_TRUNC('day', {date_col}))::date AS dt,
+                   SUM(CASE WHEN (li ? :qty_key) THEN (li->>:qty_key)::float ELSE 0 END) AS y
+            FROM {table} AS o
+            , LATERAL jsonb_array_elements(o.{line_items_col}) AS li
+            WHERE o.{line_items_col} IS NOT NULL AND {where_sql}
+            GROUP BY dt
+            ORDER BY dt
+            """
+        )
+        print("sql", sql)
+        params["qty_key"] = st.item_quantity_key
+    else:
+        # Sumar el totalPrice de las órdenes por día.
+        sql = text(
+            f"""
+            SELECT (DATE_TRUNC('day', {date_col}))::date AS dt,
+                   SUM((o.{total_price_col})::float) AS y
+            FROM {table} AS o
+            WHERE {where_sql}
+            GROUP BY dt
+            ORDER BY dt
+            """
+        )
+
+    with _engine.connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    if not rows:
+        return np.array([], dtype="datetime64[D]"), np.array([], dtype=float)
+    
+    print("rows", rows)
+    dts = np.array([np.datetime64(r[0], "D") for r in rows], dtype="datetime64[D]")
+    y = np.array([float(r[1]) for r in rows], dtype=float)
+
+    # Re-muestreo diario con relleno de 0
+    start = dts[0]
+    end = dts[-1]
+    print("start", start)
+    print("end", end)
+    full_dates = np.arange(start, end + np.timedelta64(1, "D"), dtype="datetime64[D]")
+    print("full_dates", full_dates)
+    date_to_qty = {int(dts[i].astype("datetime64[D]").astype(int)): y[i] for i in range(len(dts))}
+    full_qty = np.zeros(full_dates.shape[0], dtype=float)
+    for i, d in enumerate(full_dates):
+        if (d == np.datetime64("today", "D")):
+            print("d cambiar esto, porque por ahora estoy usando un valor de prueba", d)
+            full_qty[i] = 1000
+            continue
+        key = int(d.astype("datetime64[D]").astype(int))
+        full_qty[i] = date_to_qty.get(key, 0.0)
+
+    return full_dates, full_qty
+
+
 def fetch_last_date(product_id: str) -> Optional[np.datetime64]:
     st = _settings
     def _qi(name: str) -> str:

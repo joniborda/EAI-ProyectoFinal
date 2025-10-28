@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from .config import get_settings
+from .data_prep import create_temporal_features
 
 
 _settings = get_settings()
@@ -215,7 +216,6 @@ def fetch_sales_totals_timeseries(
     if not rows:
         return np.array([], dtype="datetime64[D]"), np.array([], dtype=float)
     
-    print("rows", rows)
     dts = np.array([np.datetime64(r[0], "D") for r in rows], dtype="datetime64[D]")
     y = np.array([float(r[1]) for r in rows], dtype=float)
 
@@ -225,7 +225,7 @@ def fetch_sales_totals_timeseries(
     print("start", start)
     print("end", end)
     full_dates = np.arange(start, end + np.timedelta64(1, "D"), dtype="datetime64[D]")
-    print("full_dates", full_dates)
+    
     date_to_qty = {int(dts[i].astype("datetime64[D]").astype(int)): y[i] for i in range(len(dts))}
     full_qty = np.zeros(full_dates.shape[0], dtype=float)
     for i, d in enumerate(full_dates):
@@ -269,13 +269,21 @@ def fetch_daily_features(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Devuelve (dates_np, X_np) con agregados diarios por producto a nivel orden.
 
-    Columnas de X:
-      0: orders_count
-      1: unique_customers
-      2: avg_order_total_price
-      3: num_channels
-      4: num_sources
-      5: avg_num_tags
+    Columnas de X (12 features totales):
+      Order features (0-5):
+        0: orders_count
+        1: unique_customers
+        2: avg_order_total_price
+        3: num_channels
+        4: num_sources
+        5: avg_num_tags
+      Temporal features (6-11):
+        6: day_of_week (0=Lunes, 6=Domingo)
+        7: day_of_month (1-31)
+        8: month (1-12)
+        9: quarter (1-4)
+        10: is_weekend (0/1)
+        11: week_of_year (1-53)
     """
     st = _settings
 
@@ -330,7 +338,7 @@ def fetch_daily_features(
         rows = conn.execute(sql, params).fetchall()
 
     if not rows:
-        return np.array([], dtype="datetime64[D]"), np.array([], dtype=float).reshape(0, 6)
+        return np.array([], dtype="datetime64[D]"), np.array([], dtype=float).reshape(0, 12)
 
     dts = np.array([np.datetime64(r[0], "D") for r in rows], dtype="datetime64[D]")
     feats = np.array([[float(r[1]), float(r[2]), float(r[3] or 0.0), float(r[4]), float(r[5]), float(r[6] or 0.0)] for r in rows], dtype=float)
@@ -349,4 +357,8 @@ def fetch_daily_features(
         else:
             feats_full[i] = 0.0
 
-    return full_dates, feats_full
+    # Agregar features temporales
+    temporal_feats = create_temporal_features(full_dates)
+    feats_with_temporal = np.concatenate([feats_full, temporal_feats], axis=1)
+
+    return full_dates, feats_with_temporal

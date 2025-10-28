@@ -5,6 +5,64 @@ from typing import Tuple
 import numpy as np
 
 
+def create_temporal_features(dates: np.ndarray) -> np.ndarray:
+    """Crea features temporales a partir de un array de fechas.
+    
+    Args:
+        dates: Array de fechas en formato datetime64[D]
+    
+    Returns:
+        Array (N, 6) con features temporales:
+          0: day_of_week (0=Lunes, 6=Domingo)
+          1: day_of_month (1-31)
+          2: month (1-12)
+          3: quarter (1-4)
+          4: is_weekend (0/1)
+          5: week_of_year (1-53)
+    """
+    if dates.size == 0:
+        return np.array([], dtype=float).reshape(0, 6)
+    
+    # Convertir a datetime64[D] si no lo está
+    dates = dates.astype('datetime64[D]')
+    
+    # Day of week: 0=Monday, 6=Sunday
+    day_of_week = (dates.astype('datetime64[D]').view('int64') - 4) % 7
+    
+    # Extraer año, mes, día
+    dates_dt = dates.astype('datetime64[M]')
+    months = (dates_dt.view('int64') % 12) + 1
+    years = dates_dt.view('int64') // 12 + 1970
+    
+    # Day of month
+    days_from_epoch = dates.astype('datetime64[D]').view('int64')
+    month_starts = dates_dt.astype('datetime64[D]').view('int64')
+    day_of_month = days_from_epoch - month_starts + 1
+    
+    # Quarter
+    quarter = ((months - 1) // 3) + 1
+    
+    # Is weekend (Saturday=5, Sunday=6)
+    is_weekend = (day_of_week >= 5).astype(float)
+    
+    # Week of year (aproximado)
+    year_starts = np.array([np.datetime64(f'{y}-01-01', 'D') for y in years])
+    days_since_year_start = (dates - year_starts).astype('timedelta64[D]').astype(int)
+    week_of_year = (days_since_year_start // 7) + 1
+    
+    # Combinar todas las features
+    features = np.column_stack([
+        day_of_week.astype(float),
+        day_of_month.astype(float),
+        months.astype(float),
+        quarter.astype(float),
+        is_weekend,
+        week_of_year.astype(float)
+    ])
+    
+    return features
+
+
 def fill_missing_daily(dates: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     if dates.size == 0:
         return dates, y

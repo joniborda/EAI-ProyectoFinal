@@ -105,6 +105,7 @@ def train(
             if target == "both":
                 # quantity
                 X_aligned = X[-y.shape[0] :, :] if X.size and X.shape[0] >= y.shape[0] else None
+                print("X_aligned shape: ", X_aligned.shape, "last 10 values: ", X_aligned[-10:])
                 p1 = rnn_train(y, pid, target="quantity", Xexo=X_aligned)  # type: ignore[arg-type]
                 if p1 is None:
                     typer.secho(
@@ -129,6 +130,8 @@ def train(
                 continue
             else:
                 X_aligned = X[-y.shape[0] :, :] if X.size and X.shape[0] >= y.shape[0] else None
+                print("X_aligned shape: ", X_aligned.shape, "last 10 values: ", X_aligned[-10:])
+                
                 path = rnn_train(y, pid, target=target, Xexo=X_aligned)  # type: ignore[arg-type]
                 if path is None:
                     typer.secho(

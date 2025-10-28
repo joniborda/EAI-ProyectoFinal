@@ -86,9 +86,23 @@ def train_and_save(
     else:
         cfg.input_size = 1
 
+    print("Creating dataset...")
+    print("y shape: ", y.shape, "last 10 values: ", y[-10:])
+    if Xexo is not None:
+        print("Xexo shape: ", Xexo.shape)
+        print("Xexo features: 12 total (6 order features + 6 temporal features)")
+        print("  Order: orders_count, unique_customers, avg_order_total_price, num_channels, num_sources, avg_num_tags")
+        print("  Temporal: day_of_week, day_of_month, month, quarter, is_weekend, week_of_year")
+        print("Xexo last 10 rows:")
+        print(Xexo[-10:])
+    else:
+        print("Xexo: None (modelo univariante)")
     X, t = _create_dataset(y, cfg.window_size, Xexo)
 
+    # print("X", X)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Training on device: ", device)
     model = SalesLSTM(cfg.input_size, cfg.hidden_size, cfg.num_layers).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     loss_fn = nn.MSELoss()
@@ -152,9 +166,6 @@ def forecast(
         x = torch.tensor(x_np, dtype=torch.float32, device=device)
         y_hat = model(x).detach().cpu().numpy().ravel()[0]
         y_hat = max(y_hat, 0.0)
-        print("y_hat", y_hat)
-        print("x", x)
-        print("cfg.input_size", cfg.input_size)
         preds.append(y_hat)
         window = np.roll(window, -1)
         window[-1] = y_hat

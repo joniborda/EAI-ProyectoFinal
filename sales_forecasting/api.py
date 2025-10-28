@@ -71,6 +71,7 @@ def train(
                 p_qty = sarimax_train(y, product_id, target="quantity")
             else:
                 X_aligned = X[-y.shape[0] :, :] if X.size and X.shape[0] >= y.shape[0] else None
+                
                 p_qty = rnn_train(y, product_id, target="quantity", Xexo=X_aligned)
                 if p_qty is None:
                     results["saved_quantity"] = ""

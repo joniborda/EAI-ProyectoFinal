@@ -5,6 +5,7 @@ Proyecto en Python para entrenar modelos SARIMAX y RNN (PyTorch) y predecir cant
 ### Requisitos
 - Python 3.10+
 - Docker (PostgreSQL corriendo en `localhost:5432`)
+- **Windows**: Microsoft Visual C++ Redistributable (requerido para PyTorch)
 
 ### Instalación
 1. Crear entorno virtual (opcional):
@@ -12,11 +13,22 @@ Proyecto en Python para entrenar modelos SARIMAX y RNN (PyTorch) y predecir cant
 python -m venv .venv
 source .venv/Scripts/activate  # Windows (Git Bash/PowerShell)
 ```
-2. Instalar dependencias:
+2. **Solo Windows**: Instalar Microsoft Visual C++ Redistributable:
+   - PyTorch requiere las bibliotecas de Visual C++ en Windows
+   - Descargar e instalar desde: https://aka.ms/vs/16/release/vc_redist.x64.exe
+   - O la versión más reciente: https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist
+   - **Reiniciar la terminal después de instalar**
+
+3. Instalar dependencias:
 ```bash
 pip install -r requirements.txt
 ```
-3. Variables de entorno:
+Nota: Si no encuentra las version que terminan con +cu124 instalarlo con el comando
+```bash
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+```
+
+4. Variables de entorno:
 ```bash
 cp .env.example .env
 # Editar .env
@@ -56,8 +68,8 @@ python -m sales_forecasting.cli test-db
 ```
 - Entrenar modelo para un producto (o todos):
 ```bash
-python -m sales_forecasting.cli train --model sarimax --product-id 12345
-python -m sales_forecasting.cli train --model rnn --product-id all
+python -m sales_forecasting.cli train --model sarimax --product-id global
+python -m sales_forecasting.cli train --model rnn --product-id global
 ```
 - Predecir próximos N días:
 ```bash
@@ -82,3 +94,10 @@ print(evaluate("12345", model="sarimax", test_horizon=14))
 - Archivos de modelo usan IDs saneados (sin `/`, espacios → `_`).
 - SARIMAX por defecto usa estacionalidad semanal implícita vía `seasonal_order=(1,0,1,7)`.
 - La RNN es una LSTM simple con ventana de 28 días (configurable en código).
+
+### Features del modelo RNN
+El modelo RNN utiliza **12 features exógenas** por cada día:
+- **Features de órdenes** (6): cantidad de órdenes, clientes únicos, precio promedio, canales, fuentes, promedio de tags
+- **Features temporales** (6): día de la semana, día del mes, mes, trimestre, es fin de semana, semana del año
+
+Estas features ayudan al modelo a capturar patrones estacionales y comportamientos relacionados con el calendario.

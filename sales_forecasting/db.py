@@ -362,3 +362,106 @@ def fetch_daily_features(
     feats_with_temporal = np.concatenate([feats_full, temporal_feats], axis=1)
 
     return full_dates, feats_with_temporal
+
+
+def fetch_global_daily_features(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Devuelve (dates_np, X_np) con agregados diarios a nivel global.
+
+    Columnas de X (12 features totales):
+      Order features (0-5):
+        0: orders_count
+        1: unique_customers
+        2: avg_order_total_price
+        3: num_channels
+        4: num_sources
+        5: avg_num_tags
+      Temporal features (6-11):
+        6: day_of_week (0-6)
+        7: day_of_month (1-31)
+        8: month (1-12)
+        9: quarter (1-4)
+        10: is_weekend (0/1)
+        11: week_of_year (1-53)
+    """
+    st = _settings
+
+    def _qi(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    table = _qi(st.orders_table)
+    date_col_q = _qi(st.orders_date_col)
+    customer_col = _qi(st.orders_customer_id_col)
+    total_price_col = _qi(st.orders_total_price_col)
+    channel_col = _qi(st.orders_channel_col)
+    source_col = _qi(st.orders_source_name_col)
+    tags_col = _qi(st.orders_tags_col)
+
+    where: list[str] = []
+    params: dict[str, object] = {}
+    if start_date is not None:
+        where.append(f"{date_col_q} >= :start_date")
+        params["start_date"] = start_date
+    if end_date is not None:
+        where.append(f"{date_col_q} <= :end_date")
+        params["end_date"] = end_date
+    where_sql = " AND ".join(where) if where else "TRUE"
+
+    sql = text(
+        f"""
+        SELECT
+            (DATE_TRUNC('day', {date_col_q}))::date AS dt,
+            COUNT(*)::float AS orders_count,
+            COUNT(DISTINCT {customer_col})::float AS unique_customers,
+            AVG(({total_price_col})::float) AS avg_order_total_price,
+            COUNT(DISTINCT {channel_col})::float AS num_channels,
+            COUNT(DISTINCT {source_col})::float AS num_sources,
+            AVG(COALESCE(jsonb_array_length({tags_col}), 0))::float AS avg_num_tags
+        FROM {table}
+        WHERE {where_sql}
+        GROUP BY dt
+        ORDER BY dt
+        """
+    )
+
+    with _engine.connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    if not rows:
+        return np.array([], dtype="datetime64[D]"), np.array([], dtype=float).reshape(0, 12)
+
+    dts = np.array([np.datetime64(r[0], 'D') for r in rows], dtype="datetime64[D]")
+    feats = np.array(
+        [
+            [
+                float(r[1]),
+                float(r[2]),
+                float(r[3] or 0.0),
+                float(r[4]),
+                float(r[5]),
+                float(r[6] or 0.0),
+            ]
+            for r in rows
+        ],
+        dtype=float,
+    )
+
+    start = dts[0]
+    end = dts[-1]
+    full_dates = np.arange(start, end + np.timedelta64(1, 'D'), dtype="datetime64[D]")
+    feats_full = np.zeros((full_dates.shape[0], feats.shape[1]), dtype=float)
+    idx_map = {int(dts[i].astype('datetime64[D]').astype(int)): i for i in range(len(dts))}
+    for i, d in enumerate(full_dates):
+        key = int(d.astype('datetime64[D]').astype(int))
+        j = idx_map.get(key)
+        if j is not None:
+            feats_full[i] = feats[j]
+        else:
+            feats_full[i] = 0.0
+
+    temporal_feats = create_temporal_features(full_dates)
+    feats_with_temporal = np.concatenate([feats_full, temporal_feats], axis=1)
+
+    return full_dates, feats_with_temporal

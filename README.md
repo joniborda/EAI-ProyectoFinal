@@ -66,14 +66,34 @@ Los `line_items` son un array JSONB; cada elemento debe incluir `product_id` y `
 ```bash
 python -m sales_forecasting.cli test-db
 ```
+- Preparación de datos (EDA) antes de entrenar:
+```bash
+# Global (ambos targets)
+python -m sales_forecasting.cli prepare-data --product-id global --target both
+
+# Un producto específico (cantidad)
+python -m sales_forecasting.cli prepare-data --product-id 12345 --target quantity
+
+# Todos los productos (ambos targets)
+python -m sales_forecasting.cli prepare-data --product-id all --target both
+```
 - Entrenar modelo para un producto (o todos):
 ```bash
-python -m sales_forecasting.cli train --model sarimax --product-id global
-python -m sales_forecasting.cli train --model rnn --product-id global
+# Global agregado (sumas de todos los productos)
+python -m sales_forecasting.cli train --model sarimax --product-id global --target both
+python -m sales_forecasting.cli train --model rnn --product-id global --target both
+
+# Por producto
+python -m sales_forecasting.cli train --model sarimax --product-id 12345 --target quantity
+python -m sales_forecasting.cli train --model rnn --product-id 12345 --target totalPrice
 ```
 - Predecir próximos N días:
 ```bash
-python -m sales_forecasting.cli predict --model sarimax --product-id 12345 --horizon 14
+# Global (ambos targets)
+python -m sales_forecasting.cli predict --model rnn --product-id global --target both --horizon 14
+
+# Por producto (cantidad)
+python -m sales_forecasting.cli predict --model sarimax --product-id 12345 --target quantity --horizon 14
 ```
 - Correr API FastAPI (Uvicorn):
 ```bash
@@ -94,6 +114,8 @@ print(evaluate("12345", model="sarimax", test_horizon=14))
 - Archivos de modelo usan IDs saneados (sin `/`, espacios → `_`).
 - SARIMAX por defecto usa estacionalidad semanal implícita vía `seasonal_order=(1,0,1,7)`.
 - La RNN es una LSTM simple con ventana de 28 días (configurable en código).
+- En entrenamiento se excluye automáticamente el día actual si aparece (para evitar datos parciales del día).
+- Para pronóstico de ingresos usar `--target totalPrice`; para cantidades `--target quantity`.
 
 ### Features del modelo RNN
 El modelo RNN utiliza **12 features exógenas** por cada día:

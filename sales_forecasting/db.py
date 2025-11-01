@@ -154,13 +154,16 @@ def fetch_sales_timeseries(
 def fetch_sales_totals_timeseries(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    target: Literal["quantity", "totalPrice"] = "quantity",
-) -> tuple[np.ndarray, np.ndarray]:
-    """Devuelve (dates_np, y_np) agregados diarios a nivel global (todos los productos).
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Devuelve (dates_np, qty_np, totalPrice_np, qty_by_channel, qty_by_source, qty_by_product) agregados diarios a nivel global.
 
-    target:
-        - "quantity": suma de cantidades vendidas (sumatoria de line_items.quantity)
-        - "totalPrice": suma del totalPrice de la orden por día
+    Returns:
+        dates_np: Array de fechas
+        qty_np: Array de cantidades vendidas por día
+        totalPrice_np: Array de precio total por día
+        qty_by_channel: Dict[channel_name, quantity_array] - cantidad por channel alineada con dates_np
+        qty_by_source: Dict[source_name, quantity_array] - cantidad por sourceName alineada con dates_np
+        qty_by_product: Dict[product_id, quantity_array] - cantidad por productId alineada con dates_np
     """
     st = _settings
 
@@ -171,6 +174,8 @@ def fetch_sales_totals_timeseries(
     table = _qi(st.orders_table)
     line_items_col = _qi(st.orders_line_items_col)
     total_price_col = _qi(st.orders_total_price_col)
+    channel_col = _qi(st.orders_channel_col)
+    source_col = _qi(st.orders_source_name_col)
 
     where: list[str] = []
     params: dict[str, object] = {}
@@ -182,61 +187,158 @@ def fetch_sales_totals_timeseries(
         params["end_date"] = end_date
     where_sql = (" AND ".join(where)) if where else "TRUE"
 
-    if target == "quantity":
-        # Sumar cantidades de todos los line_items por día.
-        sql = text(
-            f"""
-            SELECT (DATE_TRUNC('day', {date_col}))::date AS dt,
-                   SUM(CASE WHEN (li ? :qty_key) THEN (li->>:qty_key)::float ELSE 0 END) AS y
-            FROM {table} AS o
-            , LATERAL jsonb_array_elements(o.{line_items_col}) AS li
-            WHERE o.{line_items_col} IS NOT NULL AND {where_sql}
-            GROUP BY dt
-            ORDER BY dt
-            """
-        )
-        print("sql", sql)
-        params["qty_key"] = st.item_quantity_key
-    else:
-        # Sumar el totalPrice de las órdenes por día.
-        sql = text(
-            f"""
-            SELECT (DATE_TRUNC('day', {date_col}))::date AS dt,
-                   SUM((o.{total_price_col})::float) AS y
-            FROM {table} AS o
-            WHERE {where_sql}
-            GROUP BY dt
-            ORDER BY dt
-            """
-        )
-
+    # Sumar cantidades de todos los line_items por día.
+    sql = text(
+        f"""
+        SELECT (DATE_TRUNC('day', {date_col}))::date AS dt,
+                SUM(CASE WHEN (li ? :qty_key) THEN (li->>:qty_key)::float ELSE 0 END) AS quantity,
+                SUM((o.{total_price_col})::float) AS totalPrice
+        FROM {table} AS o
+        , LATERAL jsonb_array_elements(o.{line_items_col}) AS li
+        WHERE o.{line_items_col} IS NOT NULL AND {where_sql}
+        GROUP BY dt
+        ORDER BY dt
+        """
+    )
+    params["qty_key"] = st.item_quantity_key
+    
     with _engine.connect() as conn:
         rows = conn.execute(sql, params).fetchall()
 
     if not rows:
-        return np.array([], dtype="datetime64[D]"), np.array([], dtype=float)
-    
+        empty_dates = np.array([], dtype="datetime64[D]")
+        empty_values = np.array([], dtype=float)
+        return empty_dates, empty_values, empty_values, {}, {}, {}
+
     dts = np.array([np.datetime64(r[0], "D") for r in rows], dtype="datetime64[D]")
-    y = np.array([float(r[1]) for r in rows], dtype=float)
+    quantity = np.array([float(r[1]) for r in rows], dtype=float)
+    totalPrice = np.array([float(r[2]) for r in rows], dtype=float)
 
     # Re-muestreo diario con relleno de 0
     start = dts[0]
     end = dts[-1]
-    print("start", start)
-    print("end", end)
     full_dates = np.arange(start, end + np.timedelta64(1, "D"), dtype="datetime64[D]")
     
-    date_to_qty = {int(dts[i].astype("datetime64[D]").astype(int)): y[i] for i in range(len(dts))}
+    date_to_qty = {int(dts[i].astype("datetime64[D]").astype(int)): quantity[i] for i in range(len(dts))}
+    date_to_totalPrice = {int(dts[i].astype("datetime64[D]").astype(int)): totalPrice[i] for i in range(len(dts))}
     full_qty = np.zeros(full_dates.shape[0], dtype=float)
+    full_totalPrice = np.zeros(full_dates.shape[0], dtype=float)
+
     for i, d in enumerate(full_dates):
-        if (d == np.datetime64("today", "D")):
-            print("d cambiar esto, porque por ahora estoy usando un valor de prueba", d)
-            full_qty[i] = 1000
-            continue
         key = int(d.astype("datetime64[D]").astype(int))
         full_qty[i] = date_to_qty.get(key, 0.0)
+        full_totalPrice[i] = date_to_totalPrice.get(key, 0.0)
 
-    return full_dates, full_qty
+    # Consulta por channel
+    sql_by_channel = text(
+        f"""
+        SELECT (DATE_TRUNC('day', {date_col}))::date AS dt,
+                o.{channel_col} AS channel,
+                SUM(CASE WHEN (li ? :qty_key) THEN (li->>:qty_key)::float ELSE 0 END) AS quantity
+        FROM {table} AS o
+        , LATERAL jsonb_array_elements(o.{line_items_col}) AS li
+        WHERE o.{line_items_col} IS NOT NULL AND {where_sql}
+        GROUP BY dt, o.{channel_col}
+        ORDER BY dt, o.{channel_col}
+        """
+    )
+    
+    with _engine.connect() as conn:
+        rows_by_channel = conn.execute(sql_by_channel, params).fetchall()
+
+    # Organizar por channel
+    qty_by_channel: dict[str, dict[int, float]] = {}
+    for r in rows_by_channel:
+        dt_key = int(np.datetime64(r[0], "D").astype("datetime64[D]").astype(int))
+        channel = str(r[1]) if r[1] else "unknown"
+        qty = float(r[2])
+        if channel not in qty_by_channel:
+            qty_by_channel[channel] = {}
+        qty_by_channel[channel][dt_key] = qty
+
+    # Convertir a arrays alineados con full_dates
+    qty_by_channel_arrays: dict[str, np.ndarray] = {}
+    for channel, date_dict in qty_by_channel.items():
+        arr = np.zeros(full_dates.shape[0], dtype=float)
+        for i, d in enumerate(full_dates):
+            key = int(d.astype("datetime64[D]").astype(int))
+            arr[i] = date_dict.get(key, 0.0)
+        qty_by_channel_arrays[channel] = arr
+
+    # Consulta por sourceName
+    sql_by_source = text(
+        f"""
+        SELECT (DATE_TRUNC('day', {date_col}))::date AS dt,
+                o.{source_col} AS source_name,
+                SUM(CASE WHEN (li ? :qty_key) THEN (li->>:qty_key)::float ELSE 0 END) AS quantity
+        FROM {table} AS o
+        , LATERAL jsonb_array_elements(o.{line_items_col}) AS li
+        WHERE o.{line_items_col} IS NOT NULL AND {where_sql}
+        GROUP BY dt, o.{source_col}
+        ORDER BY dt, o.{source_col}
+        """
+    )
+    
+    with _engine.connect() as conn:
+        rows_by_source = conn.execute(sql_by_source, params).fetchall()
+
+    # Organizar por sourceName
+    qty_by_source: dict[str, dict[int, float]] = {}
+    for r in rows_by_source:
+        dt_key = int(np.datetime64(r[0], "D").astype("datetime64[D]").astype(int))
+        source = str(r[1]) if r[1] else "unknown"
+        qty = float(r[2])
+        if source not in qty_by_source:
+            qty_by_source[source] = {}
+        qty_by_source[source][dt_key] = qty
+
+    # Convertir a arrays alineados con full_dates
+    qty_by_source_arrays: dict[str, np.ndarray] = {}
+    for source, date_dict in qty_by_source.items():
+        arr = np.zeros(full_dates.shape[0], dtype=float)
+        for i, d in enumerate(full_dates):
+            key = int(d.astype("datetime64[D]").astype(int))
+            arr[i] = date_dict.get(key, 0.0)
+        qty_by_source_arrays[source] = arr
+
+    # Consulta por productId
+    sql_by_product = text(
+        f"""
+        SELECT (DATE_TRUNC('day', {date_col}))::date AS dt,
+                li->>:pid_key AS product_id,
+                SUM(CASE WHEN (li ? :qty_key) THEN (li->>:qty_key)::float ELSE 0 END) AS quantity
+        FROM {table} AS o
+        , LATERAL jsonb_array_elements(o.{line_items_col}) AS li
+        WHERE o.{line_items_col} IS NOT NULL AND (li ? :pid_key) AND {where_sql}
+        GROUP BY dt, li->>:pid_key
+        ORDER BY dt, li->>:pid_key
+        """
+    )
+    params["pid_key"] = st.item_product_id_key
+    
+    with _engine.connect() as conn:
+        rows_by_product = conn.execute(sql_by_product, params).fetchall()
+
+    # Organizar por productId
+    qty_by_product: dict[str, dict[int, float]] = {}
+    for r in rows_by_product:
+        dt_key = int(np.datetime64(r[0], "D").astype("datetime64[D]").astype(int))
+        product_id = str(r[1]) if r[1] else "unknown"
+        qty = float(r[2])
+        if product_id not in qty_by_product:
+            qty_by_product[product_id] = {}
+        qty_by_product[product_id][dt_key] = qty
+
+    # Convertir a arrays alineados con full_dates
+    qty_by_product_arrays: dict[str, np.ndarray] = {}
+    for product_id, date_dict in qty_by_product.items():
+        arr = np.zeros(full_dates.shape[0], dtype=float)
+        for i, d in enumerate(full_dates):
+            key = int(d.astype("datetime64[D]").astype(int))
+            arr[i] = date_dict.get(key, 0.0)
+        qty_by_product_arrays[product_id] = arr
+
+    return full_dates, full_qty, full_totalPrice, qty_by_channel_arrays, qty_by_source_arrays, qty_by_product_arrays
 
 
 def fetch_last_date(product_id: str) -> Optional[np.datetime64]:

@@ -36,7 +36,8 @@ def train(
         targets: List[Literal["quantity", "totalPrice"]] = ["quantity", "totalPrice"] if target == "both" else [target]  # type: ignore[list-item]
         results: Dict[str, str] = {}
         for tgt in targets:
-            dates, y = fetch_sales_totals_timeseries(start_date, end_date, target=tgt)
+            dates, qty, totalPrice, _, _, _ = fetch_sales_totals_timeseries(start_date, end_date)
+            y = qty if tgt == "quantity" else totalPrice
             # Excluir día actual si está presente (datos parciales)
             if dates.size and dates[-1] == np.datetime64("today", "D"):
                 y = y[:-1]
@@ -124,7 +125,8 @@ def predict(
                 preds = sarimax_forecast("global" if product_id == "global" else product_id, horizon, target=tgt)  # type: ignore[arg-type]
             else:
                 if product_id == "global":
-                    _, y = fetch_sales_totals_timeseries(target=tgt)
+                    _, qty, totalPrice, _, _, _ = fetch_sales_totals_timeseries()
+                    y = qty if tgt == "quantity" else totalPrice
                     X_aligned = None
                 else:
                     _, y = fetch_sales_timeseries(product_id, target=tgt)  # type: ignore[arg-type]
@@ -140,7 +142,8 @@ def predict(
         preds = sarimax_forecast("global" if product_id == "global" else product_id, horizon, target=target)  # type: ignore[arg-type]
     elif model == "rnn":
         if product_id == "global":
-            _, y = fetch_sales_totals_timeseries(target=target)
+            _, qty, totalPrice, _, _, _ = fetch_sales_totals_timeseries()
+            y = qty if target == "quantity" else totalPrice
             X_aligned = None
         else:
             _, y = fetch_sales_timeseries(product_id, target=target)  # type: ignore[arg-type]

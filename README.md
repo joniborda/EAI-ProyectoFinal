@@ -69,13 +69,11 @@ python -m sales_forecasting.cli test-db
 - Preparación de datos (EDA) antes de entrenar:
 ```bash
 # Global (ambos targets)
-python -m sales_forecasting.cli prepare-data --product-id global --target both
+python -m sales_forecasting.cli prepare-data --target both
 
-# Un producto específico (cantidad)
-python -m sales_forecasting.cli prepare-data --product-id 12345 --target quantity
+# Preparación por cantidad (cantidad)
+python -m sales_forecasting.cli prepare-data --target quantity
 
-# Todos los productos (ambos targets)
-python -m sales_forecasting.cli prepare-data --product-id all --target both
 ```
 - Entrenar modelo para un producto (o todos):
 ```bash

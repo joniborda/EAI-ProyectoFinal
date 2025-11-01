@@ -76,7 +76,8 @@ def _generate_eda_plots(
 	scope: str,
 	target: str,
 	dates: np.ndarray,
-	y: np.ndarray,
+	qty: np.ndarray,
+	totalPrice: np.ndarray,
 	feat_dates: Optional[np.ndarray] = None,
 	X: Optional[np.ndarray] = None,
 	out_dir: Optional[Path] = None,
@@ -85,6 +86,8 @@ def _generate_eda_plots(
 		out_dir = Path("reports") / "eda"
 	out_dir.mkdir(parents=True, exist_ok=True)
 
+	# Seleccionar el array según el target
+	y = qty if target == "quantity" else totalPrice
 	idx = pd.to_datetime(dates.astype("datetime64[D]").astype("datetime64[ns]")) if dates.size else None
 	df = pd.DataFrame({"y": y}, index=idx) if idx is not None else pd.DataFrame({"y": y})
 
@@ -180,66 +183,31 @@ def handle_test_db() -> None:
 		typer.secho(f"Error de conexión: {e}", fg=typer.colors.RED)
 		raise typer.Exit(code=1)
 
-def _do_eda(scope: str, tgt: str, dates: np.ndarray, y: np.ndarray, feat_dates=None, X=None, out_dir: Optional[Path] = None):
+def _do_eda(scope: str, tgt: str, dates: np.ndarray, qty: np.ndarray, totalPrice: np.ndarray, feat_dates=None, X=None, out_dir: Optional[Path] = None):
 	if dates.size and dates[-1] == np.datetime64("today", "D"):
-		y = y[:-1]
+		qty = qty[:-1]
+		totalPrice = totalPrice[:-1]
 		dates = dates[:-1]
-	if y.size == 0:
+	if qty.size == 0:
 		typer.secho(f"Sin datos para {scope} ({tgt}), se omite.", fg=typer.colors.YELLOW)
 		return
-	_generate_eda_plots(scope, tgt, dates, y, feat_dates, X, out_dir)
+	_generate_eda_plots(scope, tgt, dates, qty, totalPrice, feat_dates, X, out_dir)
 	typer.secho(f"EDA generado para {scope} ({tgt}).", fg=typer.colors.GREEN)
 
-def handle_prepare_data(product_id: str, start_date: Optional[str], end_date: Optional[str], target: str, out_dir: Optional[Path]) -> None:
+def handle_prepare_data(start_date: Optional[str], end_date: Optional[str], out_dir: Optional[Path]) -> None:
 	sd = date.fromisoformat(start_date) if start_date else None
 	ed = date.fromisoformat(end_date) if end_date else None
 
-	if product_id == "global":
-		targets = ["quantity", "totalPrice"] if target == "both" else [target]
-		for tgt in targets:
-			dates, y = fetch_sales_totals_timeseries(sd, ed, target=tgt)  # type: ignore[arg-type]
-			feat_dates, Xg = fetch_global_daily_features(sd, ed)
-			_do_eda("global", tgt, dates, y, feat_dates, Xg, out_dir=out_dir)
-			# Persistir dataset preparado
-			if dates.size and dates[-1] == np.datetime64("today", "D"):
-				dates = dates[:-1]
-				y = y[:-1]
-			path = _save_prepared_dataset("global", tgt, sd, ed, dates, y, feat_dates, Xg)
-			typer.secho(f"Dataset preparado guardado: {path}", fg=typer.colors.GREEN)
-		return
-
-	if product_id == "all":
-		ids = get_all_product_ids()
-	else:
-		ids = [product_id]
-
-	for pid in ids:
-		# features por producto
-		dates_x, X = fetch_daily_features(pid, sd, ed)
-		if target == "both":
-			dates_q, y_q = fetch_sales_timeseries(pid, sd, ed, target="quantity")  # type: ignore[arg-type]
-			_do_eda(f"product_{pid}", "quantity", dates_q, y_q, dates_x, X, out_dir=out_dir)
-			if dates_q.size and dates_q[-1] == np.datetime64("today", "D"):
-				dates_q = dates_q[:-1]
-				y_q = y_q[:-1]
-			path_q = _save_prepared_dataset(f"product_{pid}", "quantity", sd, ed, dates_q, y_q, dates_x, X)
-			typer.secho(f"Dataset preparado guardado: {path_q}", fg=typer.colors.GREEN)
-			dates_t, y_t = fetch_sales_timeseries(pid, sd, ed, target="totalPrice")  # type: ignore[arg-type]
-			_do_eda(f"product_{pid}", "totalPrice", dates_t, y_t, dates_x, X, out_dir=out_dir)
-			if dates_t.size and dates_t[-1] == np.datetime64("today", "D"):
-				dates_t = dates_t[:-1]
-				y_t = y_t[:-1]
-			path_t = _save_prepared_dataset(f"product_{pid}", "totalPrice", sd, ed, dates_t, y_t, dates_x, X)
-			typer.secho(f"Dataset preparado guardado: {path_t}", fg=typer.colors.GREEN)
-		else:
-			dates_y, y = fetch_sales_timeseries(pid, sd, ed, target=target)  # type: ignore[arg-type]
-			_do_eda(f"product_{pid}", target, dates_y, y, dates_x, X, out_dir=out_dir)
-			if dates_y.size and dates_y[-1] == np.datetime64("today", "D"):
-				dates_y = dates_y[:-1]
-				y = y[:-1]
-			path = _save_prepared_dataset(f"product_{pid}", target, sd, ed, dates_y, y, dates_x, X)
-			typer.secho(f"Dataset preparado guardado: {path}", fg=typer.colors.GREEN)
-
+	dates, qty, totalPrice, qty_by_channel, qty_by_source, qty_by_product = fetch_sales_totals_timeseries(sd, ed)  # type: ignore[arg-type]
+	data = {
+		"dates": dates,
+		"qty": qty,
+		"totalPrice": totalPrice,
+		"qty_by_channel": qty_by_channel,
+		"qty_by_source": qty_by_source,
+		"qty_by_product": qty_by_product,
+	}
+	print("data", data)
 
 def handle_train(model: str, product_id: str, start_date: Optional[str], end_date: Optional[str], target: str) -> None:
 	sd = date.fromisoformat(start_date) if start_date else None
@@ -380,7 +348,8 @@ def handle_predict(model: str, product_id: str, horizon: int, target: str, out: 
 			return sarimax_forecast("global" if product_id == "global" else product_id, horizon, target=tgt)  # type: ignore[arg-type]
 		elif model == "rnn":
 			if product_id == "global":
-				_, y = fetch_sales_totals_timeseries(target=tgt)  # type: ignore[arg-type]
+				_, qty, totalPrice, _, _, _ = fetch_sales_totals_timeseries()  # type: ignore[arg-type]
+				y = qty if tgt == "quantity" else totalPrice
 				X_aligned = None
 			else:
 				_, y = fetch_sales_timeseries(product_id, target=tgt)  # type: ignore[arg-type]

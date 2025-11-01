@@ -10,7 +10,8 @@ from .data_prep import train_test_split_series, rmse, mae, mape
 
 def evaluate(product_id: str, model: str = "sarimax", test_horizon: int = 14, target: str = "quantity") -> dict[str, float]:
     if product_id == "global":
-        _, y = fetch_sales_totals_timeseries(target=target)  # type: ignore[arg-type]
+        _, qty, totalPrice, _, _, _ = fetch_sales_totals_timeseries()  # type: ignore[arg-type]
+        y = qty if target == "quantity" else totalPrice
         X = np.empty((y.shape[0], 0), dtype=float)
     else:
         _, y = fetch_sales_timeseries(product_id, target=target)  # type: ignore[arg-type]

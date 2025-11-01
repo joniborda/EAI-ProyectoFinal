@@ -25,13 +25,11 @@ def test_db() -> None:
 
 @app.command()
 def prepare_data(
-	product_id: str = typer.Option(..., help="ID del producto, 'all' o 'global'"),
 	start_date: Optional[str] = typer.Option(None, help="YYYY-MM-DD (opcional)"),
 	end_date: Optional[str] = typer.Option(None, help="YYYY-MM-DD (opcional)"),
-	target: str = typer.Option("quantity", help="Objetivo: quantity|totalPrice|both"),
 	out_dir: Optional[Path] = typer.Option(None, help="Carpeta de salida para gráficos"),
 ) -> None:
-	handle_prepare_data(product_id, start_date, end_date, target, out_dir)
+	handle_prepare_data(start_date, end_date, out_dir)
 
 
 @app.command()

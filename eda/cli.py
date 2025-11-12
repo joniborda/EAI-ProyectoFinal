@@ -1,7 +1,5 @@
 from __future__ import annotations
 import typer
-from pathlib import Path
-from typing import Optional
 
 from eda.cli_handlers import handle_test_db
 from eda.eda import handle_prepare_data
@@ -16,7 +14,7 @@ def test_db() -> None:
 @app.command(
 	
 )
-def prepare_data(no_with_plots: bool = typer.Option(True, help="Generar gráficos")) -> None:
+def prepare_data(no_with_plots: bool = typer.Option(False, help="Generar gráficos")) -> None:
 	"""Prepara los datos para el EDA."""
 	handle_prepare_data(with_plots=not no_with_plots)
 

@@ -21,7 +21,10 @@ def test_connection() -> None:
 
 def get_all_data() -> list[dict]:
     with _engine.connect() as conn:
-        result = conn.execute(text(f"SELECT * FROM {_settings.orders_table} " +
+        result = conn.execute(text(f"SELECT " +
+        "id, created, \"customerId\", channel, \"sourceName\", \"tags\", " +
+        "order_number_for_customer, " +
+        f"jsonb_array_elements({_settings.orders_line_items_col}) as line_items FROM {_settings.orders_table} " +
         "where created >= '2025-10-01'"))
         return result.fetchall()
 

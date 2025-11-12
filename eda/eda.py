@@ -26,16 +26,17 @@ def handle_prepare_data(with_plots: bool = True) -> None:
     # Agrupar y graficar órdenes por día (devuelve df_grouped)
     df_grouped = group_orders_per_day_and_plot(data_df, with_plots)
 
-    if with_plots:
-        plot_weekday_orders_distribution(data_df)
+    plot_weekday_orders_distribution(data_df, with_plots)
 
-        plot_monthly_orders_distribution(data_df)
+    plot_monthly_orders_distribution(data_df, with_plots)
 
     unique_customers = plot_daily_unique_customers(data_df, with_plots)
 
     new_customers = plot_daily_new_customers(data_df, with_plots)
 
     ad_spends_df = handle_analyze_ad_spends(with_plots)
+
+    plot_explode_line_items(data_df, with_plots)
 
     # Unir por fecha: df_grouped.created con ad_spends_df.date
     combined_df = (
@@ -88,12 +89,15 @@ def handle_analyze_ad_spends(with_plots: bool = True) -> None:
     return ad_spends_df
 
 
-def plot_monthly_orders_distribution(data_df: pd.DataFrame) -> None:
+def plot_monthly_orders_distribution(data_df: pd.DataFrame, with_plots: bool = True) -> None:
     """
     Recibe el DataFrame de órdenes con columna 'created_month' y grafica
     la distribución mensual de órdenes asegurando 12 barras (meses 1..12).
     No retorna nada.
     """
+    if not with_plots:
+        return
+    
     df_month = (
         data_df
             .dropna(subset=['created_month'])
@@ -119,12 +123,15 @@ def plot_monthly_orders_distribution(data_df: pd.DataFrame) -> None:
     plt.show()
 
 
-def plot_weekday_orders_distribution(data_df: pd.DataFrame) -> None:
+def plot_weekday_orders_distribution(data_df: pd.DataFrame, with_plots: bool = True) -> None:
     """
     Recibe el DataFrame de órdenes con columna 'created_weekday' y grafica
     la distribución por día de la semana asegurando 7 barras (0..6).
     No retorna nada.
     """
+    if not with_plots:
+        return
+    
     df_weekday = (
         data_df
             .dropna(subset=['created_weekday'])
@@ -241,3 +248,32 @@ def plot_daily_new_customers(data_df: pd.DataFrame, with_plots: bool = True) -> 
         plt.show()
 
     return df_new_customers
+
+def plot_explode_line_items(data_df: pd.DataFrame, with_plots: bool = True) -> None:
+    """
+    Explota las líneas de items de las órdenes y grafica la distribución de los productos.
+    """
+    
+    # df_line_items = data_df.explode("line_items").reset_index(drop=True)
+    df_line_items = data_df.copy()
+    # Expandir solo las claves de interés del dict en 'line_items'
+    line_details = (
+        df_line_items["line_items"]
+            .apply(lambda v: v if isinstance(v, dict) else {})
+            .apply(pd.Series)
+            .reindex(columns=['productId', 'quantity'])
+    )
+    df_line_items = pd.concat(
+        [df_line_items.drop(columns="line_items"), line_details],
+        axis=1
+    )
+
+    # Normalización de tipos
+    df_line_items['productId'] = pd.to_numeric(df_line_items['productId'], errors='coerce').fillna(0).astype(int)
+    df_line_items['quantity'] = pd.to_numeric(df_line_items['quantity'], errors='coerce').fillna(0).astype(int)
+    # df_line_items['totalPrice'] = df_line_items['totalPrice'].fillna(0).astype(float)
+
+    print("df_line_items:")
+    print(df_line_items.head())
+    print(df_line_items.describe())
+    print(df_line_items.info())

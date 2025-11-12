@@ -64,15 +64,11 @@ Los `line_items` son un array JSONB; cada elemento debe incluir `product_id` y `
 ### Uso CLI
 - Probar conexión a la BD:
 ```bash
-python -m sales_forecasting.cli test-db
+python -m eda.cli test-db
 ```
 - Preparación de datos (EDA) antes de entrenar:
 ```bash
-# Global (ambos targets)
-python -m sales_forecasting.cli prepare-data --target both
-
-# Preparación por cantidad (cantidad)
-python -m sales_forecasting.cli prepare-data --target quantity
+python -m eda.cli prepare-data
 
 ```
 - Entrenar modelo para un producto (o todos):

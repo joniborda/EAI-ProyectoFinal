@@ -13,10 +13,12 @@ def test_db() -> None:
 	"""Prueba la conexión a la base de datos."""
 	handle_test_db()
 
-@app.command()
-def prepare_data() -> None:
+@app.command(
+	
+)
+def prepare_data(no_with_plots: bool = typer.Option(True, help="Generar gráficos")) -> None:
 	"""Prepara los datos para el EDA."""
-	handle_prepare_data()
+	handle_prepare_data(with_plots=not no_with_plots)
 
 
 if __name__ == "__main__":

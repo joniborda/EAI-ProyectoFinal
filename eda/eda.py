@@ -8,64 +8,64 @@ def handle_prepare_data(with_plots: bool = True) -> None:
     """
     data = get_all_data()
 
-    data_df = pd.DataFrame(data)
+    df_data = pd.DataFrame(data)
     # Usamos una serie datetime para derivar campos y luego guardamos sólo la fecha en 'created'
-    created_dt = pd.to_datetime(data_df['created'])
+    created_dt = pd.to_datetime(df_data['created'])
     # Nuevas columnas desde la fecha de creación
     # 0 = Lunes ... 6 = Domingo
-    data_df['created_weekday'] = created_dt.dt.dayofweek
+    df_data['created_weekday'] = created_dt.dt.dayofweek
     # 1 = Enero ... 12 = Diciembre
-    data_df['created_month'] = created_dt.dt.month
+    df_data['created_month'] = created_dt.dt.month
     # Guardamos sólo la fecha para agrupar por día
-    data_df['created'] = created_dt.dt.date
+    df_data['created'] = created_dt.dt.date
     print("data_df original:")
-    print(data_df.head())
-    print(data_df.describe())
-    print(data_df.info())
+    print(df_data.head())
+    print(df_data.describe())
+    print(df_data.info())
 
     # Agrupar y graficar órdenes por día (devuelve df_grouped)
-    df_grouped = group_orders_per_day_and_plot(data_df, with_plots)
+    df_group_orders_per_day = group_orders_per_day_and_plot(df_data, with_plots)
 
-    plot_weekday_orders_distribution(data_df, with_plots)
+    plot_weekday_orders_distribution(df_data, with_plots)
 
-    plot_monthly_orders_distribution(data_df, with_plots)
+    plot_monthly_orders_distribution(df_data, with_plots)
 
-    unique_customers = plot_daily_unique_customers(data_df, with_plots)
+    df_daily_unique_customers = plot_daily_unique_customers(df_data, with_plots)
 
-    new_customers = plot_daily_new_customers(data_df, with_plots)
+    df_daily_new_customers = plot_daily_new_customers(df_data, with_plots)
 
-    ad_spends_df = handle_analyze_ad_spends(with_plots)
+    df_ad_spends = handle_analyze_ad_spends(with_plots)
 
-    plot_explode_line_items(data_df, with_plots)
+    plot_explode_line_items(df_data, with_plots)
 
     # Unir por fecha: df_grouped.created con ad_spends_df.date
-    combined_df = (
-        pd.merge(df_grouped, ad_spends_df, left_on='created', right_on='date', how='outer')
+    df_combined = (
+        pd.merge(df_group_orders_per_day, df_ad_spends, left_on='created', right_on='date', how='outer')
           .assign(day=lambda df: df['created'].fillna(df['date']))
           .drop(columns=['date'])
           .sort_values('day')
     )
     # Rellenar órdenes faltantes con 0 cuando no hubo pedidos
-    combined_df['orders'] = combined_df['orders'].fillna(0).astype(int)
-    combined_df['created'] = pd.to_datetime(combined_df['created'])
+    df_combined['orders'] = df_combined['orders'].fillna(0).astype(int)
+    df_combined['created'] = pd.to_datetime(df_combined['created'])
     # 0 = Lunes ... 6 = Domingo
-    combined_df['created_weekday'] = combined_df['created'].dt.dayofweek
+    df_combined['created_weekday'] = df_combined['created'].dt.dayofweek
     # 1 = Enero ... 12 = Diciembre
-    combined_df['created_month'] = combined_df['created'].dt.month
-    combined_df['created'] = combined_df['created'].dt.date
+    df_combined['created_month'] = df_combined['created'].dt.month
+    df_combined['created'] = df_combined['created'].dt.date
     
-    combined_df = pd.merge(combined_df, unique_customers, left_on='created', right_on='created', how='left')
-    combined_df = pd.merge(combined_df, new_customers, left_on='created', right_on='created', how='left')
+    df_combined = pd.merge(df_combined, df_daily_unique_customers, left_on='created', right_on='created', how='left')
+    df_combined = pd.merge(df_combined, df_daily_new_customers, left_on='created', right_on='created', how='left')
 
-    combined_df['unique_customers'] = combined_df['unique_customers'].fillna(0).astype(int)
-    combined_df['new_customers'] = combined_df['new_customers'].fillna(0).astype(int)
+    df_combined['unique_customers'] = df_combined['unique_customers'].fillna(0).astype(int)
+    df_combined['new_customers'] = df_combined['new_customers'].fillna(0).astype(int)
     # Elimino columna day que es una copia de created
-    combined_df = combined_df.drop(columns=['day'])
+    df_combined = df_combined.drop(columns=['day'])
     
     print("Combined DataFrame:")
-    print(combined_df.head())
-    print(combined_df.describe())
-    print(combined_df.info())
+    print(df_combined.head())
+    print(df_combined.describe())
+    print(df_combined.info())
     
 
 def handle_analyze_ad_spends(with_plots: bool = True) -> None:

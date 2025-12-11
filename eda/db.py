@@ -25,6 +25,7 @@ def get_all_data() -> list[dict]:
         "id, created, \"customerId\", channel, \"sourceName\", \"tags\", " +
         "order_number_for_customer, " +
         f"jsonb_array_elements({_settings.orders_line_items_col}) as line_items FROM {_settings.orders_table} " +
+        ### TODO: Quitar el filtro de fecha para obtener todos los datos
         "where created >= '2025-10-01'"))
         return result.fetchall()
 
@@ -34,5 +35,6 @@ def get_all_ad_spends() -> list[dict]:
         " \"date\", \"adSpend\", \"rcRevenue\", \"totalRevenue\", \"totalMerchSold\", \"totalNewCustomerBarsSold\", " +
         " \"totalRecurringCustomerBarsSold\" " +
         f" FROM {_settings.ad_spends_table} " +
+        ### TODO: Quitar el filtro de fecha para obtener todos los datos
         "where date >= '2025-10-01'"))
         return result.fetchall()

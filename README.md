@@ -66,9 +66,14 @@ Los `line_items` son un array JSONB; cada elemento debe incluir `product_id` y `
 ```bash
 python -m eda.cli test-db
 ```
-- Preparación de datos (EDA) antes de entrenar:
+- Construir datasets persistidos (JSON Lines por defecto) para análisis offline:
 ```bash
-python -m eda.cli prepare-data
+python -m eda.cli build-datasets --output-dir reports/eda/data --fmt jsonl
+# formatos: jsonl | csv | both
+```
+- Analizar y graficar usando datasets guardados:
+```bash
+python -m eda.cli analyze --input-dir reports/eda/data
 
 ```
 - Entrenar modelo para un producto (o todos):

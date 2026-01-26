@@ -286,10 +286,14 @@ def run_analysis(
             df_daily_new_customers=df_daily_new_customers,
         )
 
+        combined_path = in_dir / "combined.jsonl"
+        df_combined.to_json(combined_path, orient="records", lines=True, date_format="iso")
+
         print("Combined DataFrame:")
         print(df_combined.head())
         print(df_combined.describe())
         print(df_combined.info())
+        print(f"Combined dataset guardado en: {combined_path}")
 
 
 def build_combined_with_ad_spends(
@@ -301,6 +305,25 @@ def build_combined_with_ad_spends(
     """
     Une órdenes diarias con ad_spends y agrega métricas de clientes.
     """
+    df_group_orders_per_day = df_group_orders_per_day.copy()
+    ad_spends_df = ad_spends_df.copy()
+    df_daily_unique_customers = df_daily_unique_customers.copy()
+    df_daily_new_customers = df_daily_new_customers.copy()
+
+    # Normalizar tipos de fecha para evitar merges object vs datetime64
+    df_group_orders_per_day["created"] = pd.to_datetime(
+        df_group_orders_per_day["created"], errors="coerce"
+    ).dt.date
+    ad_spends_df["date"] = pd.to_datetime(
+        ad_spends_df["date"], errors="coerce"
+    ).dt.date
+    df_daily_unique_customers["created"] = pd.to_datetime(
+        df_daily_unique_customers["created"], errors="coerce"
+    ).dt.date
+    df_daily_new_customers["created"] = pd.to_datetime(
+        df_daily_new_customers["created"], errors="coerce"
+    ).dt.date
+
     df_combined = (
         pd.merge(df_group_orders_per_day, ad_spends_df, left_on='created', right_on='date', how='outer')
           .assign(day=lambda df: df['created'].fillna(df['date']))

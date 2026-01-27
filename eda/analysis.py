@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 from matplotlib import pyplot as plt
+from matplotlib import dates as mdates
 
 
 def _ensure_dir(path: Path) -> None:
@@ -15,6 +16,43 @@ def _save_plot(filename: str, output_dir: Path | None) -> None:
         return
     _ensure_dir(output_dir)
     plt.savefig(output_dir / filename, bbox_inches="tight", dpi=150)
+
+
+def _format_date_axis_monthly() -> None:
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(mdates.MonthLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+
+
+def _normalize_created_dates(data_df: pd.DataFrame) -> None:
+    if "created" not in data_df.columns:
+        return
+
+    created = data_df["created"]
+    if pd.api.types.is_numeric_dtype(created):
+        created_numeric = pd.to_numeric(created, errors="coerce")
+        median = created_numeric.dropna().abs().median()
+        if pd.isna(median):
+            created_dt = pd.to_datetime(created, errors="coerce")
+        else:
+            if median >= 1e12:
+                unit = "ms"
+            elif median >= 1e9:
+                unit = "s"
+            else:
+                unit = None
+            if unit:
+                created_dt = pd.to_datetime(created_numeric, unit=unit, errors="coerce")
+            else:
+                created_dt = pd.to_datetime(created_numeric, errors="coerce")
+    else:
+        created_dt = pd.to_datetime(created, errors="coerce")
+
+    data_df["created_dt"] = created_dt
+    data_df["created"] = created_dt.dt.date
+    data_df["created_weekday"] = created_dt.dt.dayofweek
+    data_df["created_month"] = created_dt.dt.month
 
 
 def plot_monthly_orders_distribution(
@@ -86,7 +124,9 @@ def plot_weekday_orders_distribution(
             .rename(columns={'index': 'created_weekday'})
     )
     plt.figure(figsize=(10, 6))
+    weekday_labels = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
     plt.bar(df_weekday['created_weekday'], df_weekday['orders'], label='Órdenes por día de la semana')
+    plt.xticks(df_weekday['created_weekday'], weekday_labels)
     plt.xlabel('Día de la semana')
     plt.ylabel('Cantidad de órdenes')
     plt.title('Distribución de órdenes por día de la semana')
@@ -125,6 +165,7 @@ def group_orders_per_day_and_plot(
         plt.ylabel('Cantidad de órdenes')
         plt.title('Cantidad de órdenes por fecha de creación')
         plt.legend()
+        _format_date_axis_monthly()
         _save_plot("orders_by_day.png", output_dir)
         plt.show()
 
@@ -160,6 +201,7 @@ def plot_daily_unique_customers(
         plt.ylabel('Clientes únicos')
         plt.title('Clientes únicos por día')
         plt.legend()
+        _format_date_axis_monthly()
         _save_plot("unique_customers_by_day.png", output_dir)
         plt.show()
 
@@ -198,6 +240,7 @@ def plot_daily_new_customers(
         plt.ylabel('Clientes nuevos')
         plt.title('Clientes nuevos por día (primera compra)')
         plt.legend()
+        _format_date_axis_monthly()
         _save_plot("new_customers_by_day.png", output_dir)
         plt.show()
 
@@ -253,6 +296,7 @@ def run_analysis(
         raise FileNotFoundError(f"No existe el dataset de órdenes: {orders_path}")
 
     data_df = pd.read_json(orders_path, lines=True, dtype=False)
+    _normalize_created_dates(data_df)
     output_dir = Path(plots_dir) if with_plots else None
 
     print("data_df (ordenes) cargado:")

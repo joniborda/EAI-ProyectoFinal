@@ -325,6 +325,88 @@ def plot_explode_line_items(
     # Se pueden agregar gráficas específicas aquí si es necesario
 
 
+def plot_products_sold_by_day(
+    data_df: pd.DataFrame,
+    with_plots: bool = True,
+    output_dir: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Grafica la evolución diaria de productos vendidos.
+    Usa productId y, si está disponible, title.
+    No muestra productos hasta su fecha de lanzamiento (primer día con ventas > 1).
+    """
+    if "line_items" not in data_df.columns:
+        return pd.DataFrame()
+
+    def _normalize_items(value: object) -> list[dict]:
+        if isinstance(value, list):
+            return [v for v in value if isinstance(v, dict)]
+        if isinstance(value, dict):
+            return [value]
+        return []
+
+    df_items = data_df[["created", "line_items"]].copy()
+    df_items["line_items"] = df_items["line_items"].apply(_normalize_items)
+    df_items = df_items.explode("line_items").dropna(subset=["line_items"])
+
+    item_details = df_items["line_items"].apply(pd.Series)
+    item_details = item_details.reindex(columns=["productId", "title", "quantity"])
+    df_items = pd.concat([df_items.drop(columns=["line_items"]), item_details], axis=1)
+
+    df_items["quantity"] = pd.to_numeric(df_items["quantity"], errors="coerce").fillna(0)
+    df_items["productId"] = df_items["productId"].astype("string")
+    df_items["title"] = df_items["title"].astype("string")
+    df_items["product_label"] = df_items["title"].where(df_items["title"].notna(), df_items["productId"])
+
+    df_items = df_items.dropna(subset=["created", "product_label"])
+
+    df_products = (
+        df_items
+            .groupby(["created", "product_label"])["quantity"]
+            .sum()
+            .reset_index()
+            .sort_values("created")
+    )
+
+    df_pivot = (
+        df_products
+            .pivot(index="created", columns="product_label", values="quantity")
+            .fillna(0)
+            .sort_index()
+    )
+
+    launch_dates: dict[str, pd.Timestamp] = {}
+    for product in df_pivot.columns:
+        series = df_pivot[product]
+        launch_idx = series[series > 1].index
+        if len(launch_idx) > 0:
+            launch_dates[product] = launch_idx[0]
+
+    print("df_products_by_day (all):")
+    print(df_pivot.head())
+    print(df_pivot.describe())
+    print(df_pivot.info())
+
+    if with_plots:
+        plt.figure(figsize=(12, 6))
+        for col in df_pivot.columns:
+            launch_date = launch_dates.get(col)
+            if launch_date is None:
+                continue
+            series = df_pivot[col].loc[launch_date:]
+            plt.plot(series.index, series.values, label=str(col))
+            plt.scatter([launch_date], [series.loc[launch_date]], s=12)
+        plt.xlabel("Fecha")
+        plt.ylabel("Cantidad vendida")
+        plt.title("Productos vendidos por día (desde lanzamiento)")
+        plt.legend(ncol=2, fontsize="small")
+        _format_date_axis_monthly()
+        _save_plot("products_sold_by_day.png", output_dir)
+        plt.show()
+
+    return df_pivot
+
+
 def plot_ad_spends_metrics(
     ad_spends_df: pd.DataFrame,
     with_plots: bool = True,
@@ -417,10 +499,12 @@ def run_analysis(
     plot_order_number_for_customer_trend(
         data_df, with_plots, output_dir=output_dir
     )
+    plot_products_sold_by_day(
+        data_df, with_plots, output_dir=output_dir
+    )
 
     plot_explode_line_items(data_df, with_plots, output_dir=output_dir)
 
-    # TODO: Agregar gráficas de métricas de ad_spends
     # TODO: Agregar gráficas de métricas donde se vea los sabores
     # TODO: Del grafico de sabores tengo que identificar cuales con los días de lanzamiento del nuevo sabor y 
     # guardarlo en la db para luego usarlo en el modelo de machine learning y tambien agregar los nuevos sabores a futuro

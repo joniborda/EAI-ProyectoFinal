@@ -247,6 +247,51 @@ def plot_daily_new_customers(
     return df_new_customers
 
 
+def plot_order_number_for_customer_trend(
+    data_df: pd.DataFrame,
+    with_plots: bool = True,
+    output_dir: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Muestra cómo evoluciona el número de orden por cliente a lo largo del tiempo.
+    Calcula el promedio diario de order_number_for_customer y grafica.
+    """
+    df_order_number = (
+        data_df
+            .dropna(subset=['created', 'order_number_for_customer'])
+            .assign(order_number_for_customer=lambda df: pd.to_numeric(
+                df['order_number_for_customer'], errors='coerce'
+            ))
+            .dropna(subset=['order_number_for_customer'])
+            .groupby('created')['order_number_for_customer']
+            .mean()
+            .reset_index(name='avg_order_number_for_customer')
+            .sort_values('created')
+    )
+
+    print("df_order_number_for_customer:")
+    print(df_order_number.head())
+    print(df_order_number.describe())
+    print(df_order_number.info())
+
+    if with_plots:
+        plt.figure(figsize=(10, 6))
+        plt.plot(
+            df_order_number['created'],
+            df_order_number['avg_order_number_for_customer'],
+            label='Promedio diario de order_number_for_customer'
+        )
+        plt.xlabel('Fecha')
+        plt.ylabel('Promedio de orden por cliente')
+        plt.title('Evolución de order_number_for_customer')
+        plt.legend()
+        _format_date_axis_monthly()
+        _save_plot("order_number_for_customer_by_day.png", output_dir)
+        plt.show()
+
+    return df_order_number
+
+
 def plot_explode_line_items(
     data_df: pd.DataFrame,
     with_plots: bool = True,
@@ -278,6 +323,58 @@ def plot_explode_line_items(
     print(df_line_items.info())
 
     # Se pueden agregar gráficas específicas aquí si es necesario
+
+
+def plot_ad_spends_metrics(
+    ad_spends_df: pd.DataFrame,
+    with_plots: bool = True,
+    output_dir: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Grafica métricas de ad_spends a lo largo del tiempo.
+    """
+    df_ad = ad_spends_df.copy()
+    df_ad["date"] = pd.to_datetime(df_ad["date"], errors="coerce")
+    df_ad = df_ad.dropna(subset=["date"]).sort_values("date")
+
+    money_cols = ["adSpend", "rcRevenue", "totalRevenue"]
+    count_cols = ["totalMerchSold", "totalNewCustomerBarsSold", "totalRecurringCustomerBarsSold"]
+
+    for col in money_cols + count_cols:
+        if col in df_ad.columns:
+            df_ad[col] = pd.to_numeric(df_ad[col], errors="coerce")
+
+    print("ad_spends_df:")
+    print(df_ad.head())
+    print(df_ad.describe())
+    print(df_ad.info())
+
+    if with_plots:
+        plt.figure(figsize=(10, 6))
+        for col in money_cols:
+            if col in df_ad.columns:
+                plt.plot(df_ad["date"], df_ad[col], label=col)
+        plt.xlabel("Fecha")
+        plt.ylabel("Monto")
+        plt.title("Ad Spend y Revenue (diario)")
+        plt.legend()
+        _format_date_axis_monthly()
+        _save_plot("ad_spends_money_by_day.png", output_dir)
+        plt.show()
+
+        plt.figure(figsize=(10, 6))
+        for col in count_cols:
+            if col in df_ad.columns:
+                plt.plot(df_ad["date"], df_ad[col], label=col)
+        plt.xlabel("Fecha")
+        plt.ylabel("Cantidad")
+        plt.title("Ad Spends - Métricas de cantidad (diario)")
+        plt.legend()
+        _format_date_axis_monthly()
+        _save_plot("ad_spends_counts_by_day.png", output_dir)
+        plt.show()
+
+    return df_ad
 
 
 def run_analysis(
@@ -317,12 +414,21 @@ def run_analysis(
     df_daily_new_customers = plot_daily_new_customers(
         data_df, with_plots, output_dir=output_dir
     )
+    plot_order_number_for_customer_trend(
+        data_df, with_plots, output_dir=output_dir
+    )
 
     plot_explode_line_items(data_df, with_plots, output_dir=output_dir)
+
+    # TODO: Agregar gráficas de métricas de ad_spends
+    # TODO: Agregar gráficas de métricas donde se vea los sabores
+    # TODO: Del grafico de sabores tengo que identificar cuales con los días de lanzamiento del nuevo sabor y 
+    # guardarlo en la db para luego usarlo en el modelo de machine learning y tambien agregar los nuevos sabores a futuro
 
     # Combinar con ad_spends si está disponible
     if ad_spends_path.exists():
         ad_spends_df = pd.read_json(ad_spends_path, lines=True, dtype=False)
+        plot_ad_spends_metrics(ad_spends_df, with_plots, output_dir=output_dir)
         df_combined = build_combined_with_ad_spends(
             df_group_orders_per_day=df_group_orders_per_day,
             ad_spends_df=ad_spends_df,

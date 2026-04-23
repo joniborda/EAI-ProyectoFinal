@@ -1,7 +1,12 @@
 from __future__ import annotations
 import typer
 
-from eda.cli_handlers import handle_analyze, handle_build_datasets, handle_test_db
+from eda.cli_handlers import (
+	handle_analyze,
+	handle_build_datasets,
+	handle_build_features,
+	handle_test_db,
+)
 
 app = typer.Typer(help="CLI para EDA de ventas por producto (orders.line_items)")
 
@@ -26,6 +31,23 @@ def analyze(
 ) -> None:
 	"""Carga datasets guardados, muestra resúmenes y genera gráficos."""
 	handle_analyze(input_dir=input_dir, with_plots=not no_with_plots, plots_dir=plots_dir)
+
+@app.command()
+def build_features(
+	input_path: str = typer.Option("reports/eda/data/combined.jsonl", help="Dataset combinado (jsonl)"),
+	output_dir: str = typer.Option("reports/eda/features", help="Directorio de salida"),
+	lags: str = typer.Option("1,7,30", help="Lags separados por coma"),
+	target_col: str = typer.Option("orders", help="Columna target"),
+	window_size: int = typer.Option(28, help="Tamaño de ventana deslizante"),
+) -> None:
+	"""Construye features (lags + crecimiento) y ventanas deslizantes."""
+	handle_build_features(
+		input_path=input_path,
+		output_dir=output_dir,
+		lags=lags,
+		target_col=target_col,
+		window_size=window_size,
+	)
 
 @app.command()
 def prepare_data(no_with_plots: bool = typer.Option(False, help="(Deprecado)")) -> None:

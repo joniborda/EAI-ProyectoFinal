@@ -2,6 +2,7 @@ import typer
 from eda.db import test_connection
 from eda.data_prep import build_datasets
 from eda.analysis import run_analysis
+from eda.features import build_features
 
 
 def handle_test_db() -> None:
@@ -29,4 +30,27 @@ def handle_analyze(input_dir: str, with_plots: bool, plots_dir: str) -> None:
 		run_analysis(input_dir=input_dir, with_plots=with_plots, plots_dir=plots_dir)
 	except Exception as e:
 		typer.secho(f"Error en análisis: {e}", fg=typer.colors.RED)
+		raise typer.Exit(code=1)
+
+
+def handle_build_features(
+	input_path: str,
+	output_dir: str,
+	lags: str,
+	target_col: str,
+	window_size: int,
+) -> None:
+	try:
+		lag_list = [int(part) for part in lags.split(",") if part.strip()]
+		result = build_features(
+			input_path=input_path,
+			output_dir=output_dir,
+			lags=lag_list,
+			target_col=target_col,
+			window_size=window_size,
+		)
+		for kind, path in result.items():
+			typer.secho(f"{kind}: {path}", fg=typer.colors.GREEN)
+	except Exception as e:
+		typer.secho(f"Error construyendo features: {e}", fg=typer.colors.RED)
 		raise typer.Exit(code=1)

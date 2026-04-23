@@ -76,6 +76,15 @@ python -m eda.cli build-datasets --output-dir reports/eda/data --fmt jsonl
 python -m eda.cli analyze --input-dir reports/eda/data
 
 ```
+- Construir features y ventanas deslizantes para modelos:
+```bash
+python -m eda.cli build-features \
+  --input-path reports/eda/data/combined.jsonl \
+  --output-dir reports/eda/features \
+  --lags 1,7,30 \
+  --target-col orders \
+  --window-size 28
+```
 - Entrenar modelo para un producto (o todos):
 ```bash
 # Global agregado (sumas de todos los productos)
@@ -110,6 +119,8 @@ print(evaluate("12345", model="sarimax", test_horizon=14))
 
 ### Notas
 - La serie se agrega por día y se rellenan días sin ventas con 0.
+- Features adicionales: lags de `adSpend` y `orders`, y `revenue_growth` (pct_change de `totalRevenue`).
+- La ventana deslizante genera `reports/eda/features/windows.npz` con `X`, `y` y `feature_columns`.
 - Archivos de modelo usan IDs saneados (sin `/`, espacios → `_`).
 - SARIMAX por defecto usa estacionalidad semanal implícita vía `seasonal_order=(1,0,1,7)`.
 - La RNN es una LSTM simple con ventana de 28 días (configurable en código).

@@ -5,6 +5,7 @@ from eda.cli_handlers import (
 	handle_analyze,
 	handle_build_datasets,
 	handle_build_features,
+	handle_compare_models,
 	handle_test_db,
 )
 
@@ -47,6 +48,26 @@ def build_features(
 		lags=lags,
 		target_col=target_col,
 		window_size=window_size,
+	)
+
+
+@app.command()
+def compare_models(
+	input_path: str = typer.Option("reports/eda/features/windows.npz", help="Ventanas de entrenamiento"),
+	output_dir: str = typer.Option("reports/eda/models", help="Directorio de salida"),
+	series_path: str = typer.Option("reports/eda/features/features.jsonl", help="Serie temporal para NeuralProphet"),
+	target_col: str = typer.Option("orders", help="Columna target (serie)"),
+	val_ratio: float = typer.Option(0.2, help="Porcentaje de validación"),
+	random_state: int = typer.Option(42, help="Random seed"),
+) -> None:
+	"""Entrena varios modelos y reporta métricas para comparar."""
+	handle_compare_models(
+		input_path=input_path,
+		output_dir=output_dir,
+		series_path=series_path,
+		target_col=target_col,
+		val_ratio=val_ratio,
+		random_state=random_state,
 	)
 
 @app.command()

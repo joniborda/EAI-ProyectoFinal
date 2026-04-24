@@ -85,6 +85,15 @@ python -m eda.cli build-features \
   --target-col orders \
   --window-size 28
 ```
+- Comparar múltiples modelos y elegir el mejor:
+```bash
+python -m eda.cli compare-models \
+  --input-path reports/eda/features/windows.npz \
+  --output-dir reports/eda/models \
+  --series-path reports/eda/features/features.jsonl \
+  --target-col orders \
+  --val-ratio 0.2
+```
 - Entrenar modelo para un producto (o todos):
 ```bash
 # Global agregado (sumas de todos los productos)
@@ -121,6 +130,7 @@ print(evaluate("12345", model="sarimax", test_horizon=14))
 - La serie se agrega por día y se rellenan días sin ventas con 0.
 - Features adicionales: lags de `adSpend` y `orders`, y `revenue_growth` (pct_change de `totalRevenue`).
 - La ventana deslizante genera `reports/eda/features/windows.npz` con `X`, `y` y `feature_columns`.
+- `compare-models` entrena Linear/Ridge/RandomForest, XGBoost, CatBoost y NeuralProphet (si está disponible).
 - Archivos de modelo usan IDs saneados (sin `/`, espacios → `_`).
 - SARIMAX por defecto usa estacionalidad semanal implícita vía `seasonal_order=(1,0,1,7)`.
 - La RNN es una LSTM simple con ventana de 28 días (configurable en código).

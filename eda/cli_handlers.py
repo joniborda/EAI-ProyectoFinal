@@ -3,6 +3,7 @@ from eda.db import test_connection
 from eda.data_prep import build_datasets
 from eda.analysis import run_analysis
 from eda.features import build_features
+from eda.train import compare_models
 
 
 def handle_test_db() -> None:
@@ -53,4 +54,29 @@ def handle_build_features(
 			typer.secho(f"{kind}: {path}", fg=typer.colors.GREEN)
 	except Exception as e:
 		typer.secho(f"Error construyendo features: {e}", fg=typer.colors.RED)
+		raise typer.Exit(code=1)
+
+
+def handle_compare_models(
+	input_path: str,
+	output_dir: str,
+	series_path: str,
+	target_col: str,
+	val_ratio: float,
+	random_state: int,
+) -> None:
+	try:
+		result = compare_models(
+			input_path=input_path,
+			output_dir=output_dir,
+			series_path=series_path,
+			target_col=target_col,
+			val_ratio=val_ratio,
+			random_state=random_state,
+		)
+		typer.secho(f"Metrics: {result['metrics']}", fg=typer.colors.GREEN)
+		typer.secho(f"Metadata: {result['metadata']}", fg=typer.colors.GREEN)
+		typer.secho(f"Models dir: {result['models_dir']}", fg=typer.colors.GREEN)
+	except Exception as e:
+		typer.secho(f"Error entrenando modelos: {e}", fg=typer.colors.RED)
 		raise typer.Exit(code=1)

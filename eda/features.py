@@ -74,6 +74,8 @@ def build_features(
     output_base = Path(output_dir)
     _ensure_dir(output_base)
 
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
     features_path = output_base / "features.jsonl"
     df.to_json(features_path, orient="records", lines=True, date_format="iso")
 

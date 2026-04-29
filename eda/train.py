@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -16,15 +18,35 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     xgb = None
 
+_NEURALPROPHET_IMPORT_ERROR: str | None = None
 try:
     from neuralprophet import NeuralProphet
-except Exception:  # pragma: no cover - optional dependency
+except Exception as exc:  # pragma: no cover - optional dependency
     NeuralProphet = None
+    _NEURALPROPHET_IMPORT_ERROR = repr(exc)
 
 try:
     from catboost import CatBoostRegressor
 except Exception:  # pragma: no cover - optional dependency
     CatBoostRegressor = None
+
+
+@contextlib.contextmanager
+def _neuralprophet_torch_unsafe_weights() -> Iterator[None]:
+    """PyTorch>=2.6 usa weights_only=True; NeuralProphet carga objetos NP vía torch.load."""
+    import torch
+
+    orig = torch.load
+
+    def _load(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("weights_only", False)
+        return orig(*args, **kwargs)
+
+    torch.load = _load  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        torch.load = orig  # type: ignore[method-assign]
 
 
 def _ensure_dir(path: Path) -> None:
@@ -119,9 +141,9 @@ def _train_neuralprophet(
     val_df = series_df.iloc[split_idx:]
 
     model = NeuralProphet()
-    model.fit(train_df, freq="D")
-
-    forecast = model.predict(val_df)
+    with _neuralprophet_torch_unsafe_weights():
+        model.fit(train_df, freq="D")
+        forecast = model.predict(val_df)
     metrics = _evaluate_predictions(val_df["y"].to_numpy(), forecast["yhat1"].to_numpy())
 
     joblib.dump(model, output_dir / "neuralprophet.joblib")
@@ -159,6 +181,9 @@ def compare_models(
     metrics: dict[str, Any] = {}
 
     for name, model in registry.items():
+        if isinstance(model, dict):
+            metrics[name] = model
+            continue
         try:
             model.fit(x_train, y_train)
             preds = model.predict(x_val)
@@ -174,7 +199,8 @@ def compare_models(
 
     series_file = Path(series_path)
     if NeuralProphet is None:
-        metrics["neuralprophet"] = {"error": "NeuralProphet no está instalado."}
+        detail = f" Detalle: {_NEURALPROPHET_IMPORT_ERROR}" if _NEURALPROPHET_IMPORT_ERROR else ""
+        metrics["neuralprophet"] = {"error": f"NeuralProphet no está instalado.{detail}"}
     elif not series_file.exists():
         metrics["neuralprophet"] = {"error": f"No existe series_path: {series_file}"}
     else:

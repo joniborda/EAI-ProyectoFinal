@@ -5,3 +5,5 @@ __pycache__/
 .ipynb_checkpoints/
 reports/eda/data/*.jsonl
 *.ckpt
+lightning_logs/
+catboost_info/

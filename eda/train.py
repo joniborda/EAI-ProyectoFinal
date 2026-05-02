@@ -30,6 +30,47 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     CatBoostRegressor = None
 
+_STATSMODELS_IMPORT_ERROR: str | None = None
+try:
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+except Exception as exc:  # pragma: no cover - optional dependency
+    ExponentialSmoothing = None
+    SARIMAX = None
+    _STATSMODELS_IMPORT_ERROR = repr(exc)
+
+_TORCH_IMPORT_ERROR: str | None = None
+try:
+    import torch
+    from torch import nn
+    from torch.utils.data import DataLoader, TensorDataset
+except Exception as exc:  # pragma: no cover - optional dependency
+    torch = None
+    nn = None
+    DataLoader = None
+    TensorDataset = None
+    _TORCH_IMPORT_ERROR = repr(exc)
+
+_TFT_IMPORT_ERROR: str | None = None
+try:
+    from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet  # type: ignore[import-not-found]
+    from pytorch_forecasting.metrics import QuantileLoss  # type: ignore[import-not-found]
+except Exception as exc:  # pragma: no cover - optional dependency
+    TemporalFusionTransformer = None
+    TimeSeriesDataSet = None
+    QuantileLoss = None
+    _TFT_IMPORT_ERROR = repr(exc)
+
+_LIGHTNING_IMPORT_ERROR: str | None = None
+try:
+    from lightning.pytorch import Trainer  # type: ignore[import-not-found]
+except Exception as exc:  # pragma: no cover - optional dependency
+    try:
+        from pytorch_lightning import Trainer  # type: ignore[import-not-found]
+    except Exception as fallback_exc:  # pragma: no cover - optional dependency
+        Trainer = None
+        _LIGHTNING_IMPORT_ERROR = f"{repr(exc)}; fallback: {repr(fallback_exc)}"
+
 
 @contextlib.contextmanager
 def _neuralprophet_torch_unsafe_weights() -> Iterator[None]:
@@ -76,11 +117,70 @@ def _train_val_split(x: np.ndarray, y: np.ndarray, val_ratio: float) -> tuple[np
     return x[:split_idx], x[split_idx:], y[:split_idx], y[split_idx:]
 
 
+def _split_series(series: pd.Series, val_ratio: float) -> tuple[pd.Series, pd.Series]:
+    if not 0.0 < val_ratio < 1.0:
+        raise ValueError("val_ratio debe estar entre 0 y 1.")
+    split_idx = int(len(series) * (1 - val_ratio))
+    return series.iloc[:split_idx], series.iloc[split_idx:]
+
+
+def _dependency_error(package: str, detail: str | None = None) -> dict[str, str]:
+    suffix = f" Detalle: {detail}" if detail else ""
+    return {"error": f"{package} no está instalado o no está disponible.{suffix}"}
+
+
 def _evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     mae = mean_absolute_error(y_true, y_pred)
     rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
     mape = float(np.mean(np.abs((y_true - y_pred) / np.clip(np.abs(y_true), 1e-8, None))))
     return {"mae": float(mae), "rmse": float(rmse), "mape": float(mape)}
+
+
+def _prepare_target_series(df: pd.DataFrame, target_col: str) -> pd.Series:
+    series_df = df[["created", target_col]].dropna().copy()
+    series_df["created"] = pd.to_datetime(series_df["created"], errors="coerce")
+    series_df[target_col] = pd.to_numeric(series_df[target_col], errors="coerce")
+    series_df = series_df.dropna(subset=["created", target_col]).sort_values("created")
+    if series_df.empty:
+        raise ValueError("No hay datos válidos para entrenar modelos de serie temporal.")
+
+    series = (
+        series_df.groupby(series_df["created"].dt.floor("D"))[target_col]
+        .sum()
+        .sort_index()
+        .asfreq("D")
+    )
+    return series
+
+
+def _fill_series_for_model(series: pd.Series) -> pd.Series:
+    filled = series.astype(float).interpolate(method="time", limit_direction="both")
+    return filled.ffill().bfill()
+
+
+def _standardize_train_val(
+    x_train: np.ndarray,
+    x_val: np.ndarray,
+    y_train: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray | float]]:
+    x_mean = x_train.mean(axis=(0, 1), keepdims=True)
+    x_std = x_train.std(axis=(0, 1), keepdims=True)
+    x_std = np.where(x_std == 0, 1.0, x_std)
+    y_mean = float(y_train.mean())
+    y_std = float(y_train.std())
+    if y_std == 0:
+        y_std = 1.0
+
+    x_train_scaled = (x_train - x_mean) / x_std
+    x_val_scaled = (x_val - x_mean) / x_std
+    y_train_scaled = (y_train - y_mean) / y_std
+    scalers: dict[str, np.ndarray | float] = {
+        "x_mean": x_mean,
+        "x_std": x_std,
+        "y_mean": y_mean,
+        "y_std": y_std,
+    }
+    return x_train_scaled, x_val_scaled, y_train_scaled, scalers
 
 
 def _build_model_registry(random_state: int) -> dict[str, Any]:
@@ -150,6 +250,239 @@ def _train_neuralprophet(
     return metrics
 
 
+def _train_sarima(
+    df: pd.DataFrame,
+    target_col: str,
+    val_ratio: float,
+    output_dir: Path,
+) -> dict[str, float]:
+    if SARIMAX is None:
+        raise RuntimeError("statsmodels no está disponible.")
+
+    series = _prepare_target_series(df, target_col=target_col)
+    train_series, val_series = _split_series(series, val_ratio=val_ratio)
+    train_series = _fill_series_for_model(train_series)
+    val_series = _fill_series_for_model(val_series)
+
+    model = SARIMAX(
+        train_series,
+        order=(1, 1, 1),
+        seasonal_order=(1, 1, 1, 7),
+        enforce_stationarity=False,
+        enforce_invertibility=False,
+    )
+    fitted = model.fit(disp=False)
+    preds = fitted.forecast(steps=len(val_series))
+    metrics = _evaluate_predictions(val_series.to_numpy(), preds.to_numpy())
+
+    joblib.dump(fitted, output_dir / "sarima.joblib")
+    return metrics
+
+
+def _train_exponential_smoothing(
+    df: pd.DataFrame,
+    target_col: str,
+    val_ratio: float,
+    output_dir: Path,
+) -> dict[str, float]:
+    if ExponentialSmoothing is None:
+        raise RuntimeError("statsmodels no está disponible.")
+
+    series = _prepare_target_series(df, target_col=target_col)
+    train_series, val_series = _split_series(series, val_ratio=val_ratio)
+    train_series = _fill_series_for_model(train_series)
+    val_series = _fill_series_for_model(val_series)
+
+    use_seasonal = len(train_series) >= 14
+    model = ExponentialSmoothing(
+        train_series,
+        trend="add",
+        seasonal="add" if use_seasonal else None,
+        seasonal_periods=7 if use_seasonal else None,
+        initialization_method="estimated",
+    )
+    fitted = model.fit(optimized=True)
+    preds = fitted.forecast(len(val_series))
+    metrics = _evaluate_predictions(val_series.to_numpy(), preds.to_numpy())
+
+    joblib.dump(fitted, output_dir / "exponential_smoothing.joblib")
+    return metrics
+
+
+def _train_lstm(
+    x_train: np.ndarray,
+    x_val: np.ndarray,
+    y_train: np.ndarray,
+    y_val: np.ndarray,
+    output_dir: Path,
+    random_state: int,
+    epochs: int = 50,
+    batch_size: int = 32,
+) -> dict[str, float]:
+    if torch is None or nn is None or DataLoader is None or TensorDataset is None:
+        raise RuntimeError("torch no está disponible.")
+
+    torch.manual_seed(random_state)
+    x_train_scaled, x_val_scaled, y_train_scaled, scalers = _standardize_train_val(
+        x_train=x_train,
+        x_val=x_val,
+        y_train=y_train,
+    )
+
+    class _LSTMRegressor(nn.Module):  # type: ignore[misc]
+        def __init__(self, input_size: int, hidden_size: int = 64) -> None:
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                num_layers=2,
+                dropout=0.2,
+                batch_first=True,
+            )
+            self.head = nn.Sequential(
+                nn.Linear(hidden_size, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1),
+            )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            output, _ = self.lstm(x)
+            return self.head(output[:, -1, :]).squeeze(-1)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = _LSTMRegressor(input_size=x_train.shape[-1]).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    loss_fn = nn.MSELoss()
+
+    train_dataset = TensorDataset(
+        torch.tensor(x_train_scaled, dtype=torch.float32),
+        torch.tensor(y_train_scaled, dtype=torch.float32),
+    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+
+    model.train()
+    for _ in range(epochs):
+        for batch_x, batch_y in train_loader:
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.to(device)
+            optimizer.zero_grad()
+            loss = loss_fn(model(batch_x), batch_y)
+            loss.backward()
+            optimizer.step()
+
+    model.eval()
+    with torch.no_grad():
+        preds_scaled = model(torch.tensor(x_val_scaled, dtype=torch.float32).to(device)).cpu().numpy()
+    preds = preds_scaled * float(scalers["y_std"]) + float(scalers["y_mean"])
+    metrics = _evaluate_predictions(y_val, preds)
+
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "input_size": x_train.shape[-1],
+            "scalers": scalers,
+            "epochs": epochs,
+            "batch_size": batch_size,
+        },
+        output_dir / "lstm.pt",
+    )
+    return metrics
+
+
+def _train_temporal_fusion_transformer(
+    df: pd.DataFrame,
+    target_col: str,
+    val_ratio: float,
+    output_dir: Path,
+    random_state: int,
+    max_encoder_length: int = 28,
+    max_epochs: int = 10,
+) -> dict[str, float]:
+    missing = []
+    if torch is None:
+        missing.append(f"torch: {_TORCH_IMPORT_ERROR}")
+    if TimeSeriesDataSet is None or TemporalFusionTransformer is None or QuantileLoss is None:
+        missing.append(f"pytorch-forecasting: {_TFT_IMPORT_ERROR}")
+    if Trainer is None:
+        missing.append(f"lightning: {_LIGHTNING_IMPORT_ERROR}")
+    if missing:
+        raise RuntimeError("; ".join(missing))
+
+    torch.manual_seed(random_state)
+    raw_series = _prepare_target_series(df, target_col=target_col)
+    train_series, val_series = _split_series(raw_series, val_ratio=val_ratio)
+    series = pd.concat(
+        [
+            _fill_series_for_model(train_series),
+            _fill_series_for_model(val_series),
+        ]
+    )
+    data = series.reset_index()
+    data.columns = ["created", target_col]
+    data["time_idx"] = np.arange(len(data), dtype=int)
+    data["series_id"] = "main"
+    data["month"] = data["created"].dt.month.astype(str).astype("category")
+    data["weekday"] = data["created"].dt.weekday.astype(str).astype("category")
+
+    split_idx = int(len(data) * (1 - val_ratio))
+    if split_idx <= max_encoder_length:
+        raise ValueError("No hay suficientes filas para entrenar TFT con max_encoder_length=28.")
+    training_cutoff = split_idx - 1
+
+    training = TimeSeriesDataSet(
+        data[lambda x: x.time_idx <= training_cutoff],
+        time_idx="time_idx",
+        target=target_col,
+        group_ids=["series_id"],
+        min_encoder_length=max_encoder_length // 2,
+        max_encoder_length=max_encoder_length,
+        min_prediction_length=1,
+        max_prediction_length=1,
+        static_categoricals=["series_id"],
+        time_varying_known_categoricals=["month", "weekday"],
+        time_varying_known_reals=["time_idx"],
+        time_varying_unknown_reals=[target_col],
+        add_relative_time_idx=True,
+        add_target_scales=True,
+        add_encoder_length=True,
+    )
+    validation = TimeSeriesDataSet.from_dataset(
+        training,
+        data,
+        min_prediction_idx=training_cutoff + 1,
+        stop_randomization=True,
+    )
+
+    train_loader = training.to_dataloader(train=True, batch_size=32, num_workers=0)
+    val_loader = validation.to_dataloader(train=False, batch_size=32, num_workers=0)
+
+    model = TemporalFusionTransformer.from_dataset(
+        training,
+        learning_rate=0.03,
+        hidden_size=16,
+        attention_head_size=2,
+        dropout=0.1,
+        hidden_continuous_size=8,
+        loss=QuantileLoss(),
+        optimizer="adam",
+    )
+    trainer = Trainer(
+        max_epochs=max_epochs,
+        accelerator="auto",
+        enable_checkpointing=False,
+        logger=False,
+        enable_model_summary=False,
+    )
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+    actuals = torch.cat([y[0] for _, y in iter(val_loader)]).detach().cpu().numpy().reshape(-1)
+    predictions = model.predict(val_loader).detach().cpu().numpy().reshape(-1)
+    metrics = _evaluate_predictions(actuals, predictions)
+
+    trainer.save_checkpoint(output_dir / "temporal_fusion_transformer.ckpt")
+    return metrics
+
+
 def compare_models(
     input_path: str | Path = "reports/eda/features/windows.npz",
     output_dir: str | Path = "reports/eda/models",
@@ -169,13 +502,18 @@ def compare_models(
     _ensure_dir(output_base)
 
     x_window, y_window, feature_columns = _load_windows(npz_path)
+
+    finite_mask = np.isfinite(x_window).all(axis=(1, 2)) & np.isfinite(y_window)
+    x_window = x_window[finite_mask]
+    y_window = y_window[finite_mask]
     x_flat = _flatten_windows(x_window)
 
-    finite_mask = np.isfinite(x_flat).all(axis=1) & np.isfinite(y_window)
-    x_flat = x_flat[finite_mask]
-    y_window = y_window[finite_mask]
-
     x_train, x_val, y_train, y_val = _train_val_split(x_flat, y_window, val_ratio=val_ratio)
+    x_train_seq, x_val_seq, y_train_seq, y_val_seq = _train_val_split(
+        x_window,
+        y_window,
+        val_ratio=val_ratio,
+    )
 
     registry = _build_model_registry(random_state=random_state)
     metrics: dict[str, Any] = {}
@@ -197,26 +535,85 @@ def compare_models(
         except Exception as exc:
             metrics[name] = {"error": str(exc)}
 
+    if torch is None:
+        metrics["lstm"] = _dependency_error("PyTorch", _TORCH_IMPORT_ERROR)
+    else:
+        try:
+            metrics["lstm"] = _train_lstm(
+                x_train=x_train_seq,
+                x_val=x_val_seq,
+                y_train=y_train_seq,
+                y_val=y_val_seq,
+                output_dir=output_base,
+                random_state=random_state,
+            )
+        except Exception as exc:
+            metrics["lstm"] = {"error": str(exc)}
+
     series_file = Path(series_path)
-    if NeuralProphet is None:
-        detail = f" Detalle: {_NEURALPROPHET_IMPORT_ERROR}" if _NEURALPROPHET_IMPORT_ERROR else ""
-        metrics["neuralprophet"] = {"error": f"NeuralProphet no está instalado.{detail}"}
-    elif not series_file.exists():
-        metrics["neuralprophet"] = {"error": f"No existe series_path: {series_file}"}
+    series_model_names = (
+        "sarima",
+        "exponential_smoothing",
+        "neuralprophet",
+        "temporal_fusion_transformer",
+    )
+    if not series_file.exists():
+        for name in series_model_names:
+            metrics[name] = {"error": f"No existe series_path: {series_file}"}
     else:
         df_series = pd.read_json(series_file, lines=True, dtype=False)
         if "created" in df_series.columns and target_col in df_series.columns:
+            if SARIMAX is None or ExponentialSmoothing is None:
+                statsmodels_error = _dependency_error("statsmodels", _STATSMODELS_IMPORT_ERROR)
+                metrics["sarima"] = statsmodels_error
+                metrics["exponential_smoothing"] = statsmodels_error
+            else:
+                try:
+                    metrics["sarima"] = _train_sarima(
+                        df=df_series,
+                        target_col=target_col,
+                        val_ratio=val_ratio,
+                        output_dir=output_base,
+                    )
+                except Exception as exc:
+                    metrics["sarima"] = {"error": str(exc)}
+
+                try:
+                    metrics["exponential_smoothing"] = _train_exponential_smoothing(
+                        df=df_series,
+                        target_col=target_col,
+                        val_ratio=val_ratio,
+                        output_dir=output_base,
+                    )
+                except Exception as exc:
+                    metrics["exponential_smoothing"] = {"error": str(exc)}
+
+            if NeuralProphet is None:
+                metrics["neuralprophet"] = _dependency_error("NeuralProphet", _NEURALPROPHET_IMPORT_ERROR)
+            else:
+                try:
+                    metrics["neuralprophet"] = _train_neuralprophet(
+                        df=df_series,
+                        target_col=target_col,
+                        val_ratio=val_ratio,
+                        output_dir=output_base,
+                    )
+                except Exception as exc:
+                    metrics["neuralprophet"] = {"error": str(exc)}
+
             try:
-                metrics["neuralprophet"] = _train_neuralprophet(
+                metrics["temporal_fusion_transformer"] = _train_temporal_fusion_transformer(
                     df=df_series,
                     target_col=target_col,
                     val_ratio=val_ratio,
                     output_dir=output_base,
+                    random_state=random_state,
                 )
             except Exception as exc:
-                metrics["neuralprophet"] = {"error": str(exc)}
+                metrics["temporal_fusion_transformer"] = {"error": str(exc)}
         else:
-            metrics["neuralprophet"] = {"error": "Faltan columnas created/target_col en series."}
+            for name in series_model_names:
+                metrics[name] = {"error": "Faltan columnas created/target_col en series."}
 
     metrics_path = output_base / "metrics.json"
     meta_path = output_base / "metadata.json"

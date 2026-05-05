@@ -4,6 +4,7 @@ from eda.data_prep import build_datasets
 from eda.analysis import run_analysis
 from eda.features import build_features
 from eda.train import compare_models
+from eda.training_dag import run_training_dag
 
 
 def handle_test_db() -> None:
@@ -79,4 +80,37 @@ def handle_compare_models(
 		typer.secho(f"Models dir: {result['models_dir']}", fg=typer.colors.GREEN)
 	except Exception as e:
 		typer.secho(f"Error entrenando modelos: {e}", fg=typer.colors.RED)
+		raise typer.Exit(code=1)
+
+
+def handle_training_dag(
+	input_path: str,
+	output_dir: str,
+	series_path: str,
+	target_col: str,
+	val_ratio: float,
+	random_state: int,
+	selection_metric: str,
+) -> None:
+	try:
+		result = run_training_dag(
+			input_path=input_path,
+			output_dir=output_dir,
+			series_path=series_path,
+			target_col=target_col,
+			val_ratio=val_ratio,
+			random_state=random_state,
+			selection_metric=selection_metric,
+		)
+		typer.secho(f"Metrics: {result['metrics']}", fg=typer.colors.GREEN)
+		typer.secho(f"Metadata: {result['metadata']}", fg=typer.colors.GREEN)
+		typer.secho(f"Models dir: {result['models_dir']}", fg=typer.colors.GREEN)
+		typer.secho(
+			f"Best model: {result['best_model']} ({result['metric_name']}={result['metric_value']:.4f})",
+			fg=typer.colors.GREEN,
+		)
+		typer.secho(f"Best model artifact: {result['best_model_path']}", fg=typer.colors.GREEN)
+		typer.secho(f"Best model metadata: {result['best_model_metadata']}", fg=typer.colors.GREEN)
+	except Exception as e:
+		typer.secho(f"Error ejecutando DAG de entrenamiento: {e}", fg=typer.colors.RED)
 		raise typer.Exit(code=1)

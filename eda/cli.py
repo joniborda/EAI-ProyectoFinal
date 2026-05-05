@@ -7,6 +7,7 @@ from eda.cli_handlers import (
 	handle_build_features,
 	handle_compare_models,
 	handle_test_db,
+	handle_training_dag,
 )
 
 app = typer.Typer(help="CLI para EDA de ventas por producto (orders.line_items)")
@@ -68,6 +69,27 @@ def compare_models(
 		target_col=target_col,
 		val_ratio=val_ratio,
 		random_state=random_state,
+	)
+
+@app.command()
+def training_dag(
+	input_path: str = typer.Option("reports/eda/features/windows.npz", help="Ventanas de entrenamiento"),
+	output_dir: str = typer.Option("reports/eda/models", help="Directorio de salida"),
+	series_path: str = typer.Option("reports/eda/features/features.jsonl", help="Serie temporal"),
+	target_col: str = typer.Option("orders", help="Columna target (serie)"),
+	val_ratio: float = typer.Option(0.2, help="Porcentaje de validación"),
+	random_state: int = typer.Option(42, help="Random seed"),
+	selection_metric: str = typer.Option("mae", help="Métrica para elegir ganador: mae|rmse|mape"),
+) -> None:
+	"""Ejecuta entrenamiento, selección del ganador y promoción para predict."""
+	handle_training_dag(
+		input_path=input_path,
+		output_dir=output_dir,
+		series_path=series_path,
+		target_col=target_col,
+		val_ratio=val_ratio,
+		random_state=random_state,
+		selection_metric=selection_metric,
 	)
 
 @app.command()

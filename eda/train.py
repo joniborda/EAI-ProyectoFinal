@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,41 @@ def _evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, f
     return {"mae": float(mae), "rmse": float(rmse), "mape": float(mape)}
 
 
+def _log_to_mlflow(
+    metrics: dict[str, Any],
+    metadata: dict[str, Any],
+    output_base: Path,
+    target_col: str,
+    val_ratio: float,
+) -> str | None:
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    if not tracking_uri:
+        return None
+
+    import mlflow
+
+    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "sales-forecasting")
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment(experiment_name)
+
+    with mlflow.start_run(run_name=f"compare-models-{target_col}") as run:
+        mlflow.log_params(
+            {
+                "target_col": target_col,
+                "val_ratio": val_ratio,
+                "window_shape": json.dumps(metadata["window_shape"]),
+            }
+        )
+        for model_name, model_metrics in metrics.items():
+            if not isinstance(model_metrics, dict):
+                continue
+            for metric_name, metric_value in model_metrics.items():
+                if isinstance(metric_value, int | float | np.floating):
+                    mlflow.log_metric(f"{model_name}_{metric_name}", float(metric_value))
+        mlflow.log_artifacts(str(output_base))
+        return run.info.run_id
+
+
 def _prepare_target_series(df: pd.DataFrame, target_col: str) -> pd.Series:
     series_df = df[["created", target_col]].dropna().copy()
     series_df["created"] = pd.to_datetime(series_df["created"], errors="coerce")
@@ -156,6 +192,78 @@ def _prepare_target_series(df: pd.DataFrame, target_col: str) -> pd.Series:
 def _fill_series_for_model(series: pd.Series) -> pd.Series:
     filled = series.astype(float).interpolate(method="time", limit_direction="both")
     return filled.ffill().bfill()
+
+
+class TrailingMeanWeekdayMedianBaseline:
+    """
+    Modelo base que mezcla inercia reciente (TM7) y estacionalidad semanal (SW8).
+    """
+
+    def __init__(
+        self,
+        trailing_days: int = 7,
+        weekday_weeks: int = 8,
+        trailing_weight: float = 0.45,
+        weekday_weight: float = 0.55,
+    ) -> None:
+        self.trailing_days = trailing_days
+        self.weekday_weeks = weekday_weeks
+        self.trailing_weight = trailing_weight
+        self.weekday_weight = weekday_weight
+        self.series_: pd.Series | None = None
+
+    def fit(self, series: pd.Series) -> "TrailingMeanWeekdayMedianBaseline":
+        if series.empty:
+            raise ValueError("No hay datos para ajustar el baseline TM7/SW8.")
+
+        fitted = series.copy()
+        fitted.index = pd.to_datetime(fitted.index).floor("D")
+        fitted = pd.to_numeric(fitted, errors="coerce").sort_index()
+        self.series_ = fitted
+        return self
+
+    def _require_fitted(self) -> pd.Series:
+        if self.series_ is None:
+            raise RuntimeError("El baseline TM7/SW8 debe ajustarse con fit antes de predecir.")
+        return self.series_
+
+    def components_for(self, target_date: Any) -> dict[str, float | None]:
+        series = self._require_fitted()
+        target = pd.Timestamp(target_date).floor("D")
+
+        trailing_start = target - pd.Timedelta(days=self.trailing_days)
+        trailing_values = series[(series.index >= trailing_start) & (series.index < target)].dropna()
+
+        weekday_start = target - pd.Timedelta(weeks=self.weekday_weeks)
+        weekday_values = series[
+            (series.index >= weekday_start)
+            & (series.index < target)
+            & (series.index.weekday == target.weekday())
+        ].dropna()
+
+        trailing_mean = None if trailing_values.empty else float(trailing_values.mean())
+        weekday_median = None if weekday_values.empty else float(weekday_values.median())
+        return {
+            "trailing_mean_7": trailing_mean,
+            "same_weekday_median_8w": weekday_median,
+        }
+
+    def predict_one(self, target_date: Any) -> float:
+        components = self.components_for(target_date)
+        trailing_mean = components["trailing_mean_7"]
+        weekday_median = components["same_weekday_median_8w"]
+
+        if trailing_mean is not None and weekday_median is not None:
+            return self.trailing_weight * trailing_mean + self.weekday_weight * weekday_median
+        if trailing_mean is not None:
+            return trailing_mean
+        if weekday_median is not None:
+            return weekday_median
+        raise ValueError(f"No hay historia suficiente para predecir {pd.Timestamp(target_date).date()}.")
+
+    def predict(self, target_dates: Any) -> np.ndarray:
+        dates = pd.Index(target_dates)
+        return np.asarray([self.predict_one(target_date) for target_date in dates], dtype=float)
 
 
 def _standardize_train_val(
@@ -490,6 +598,7 @@ def compare_models(
     target_col: str = "orders",
     val_ratio: float = 0.2,
     random_state: int = 42,
+    log_mlflow: bool = True,
 ) -> dict[str, Any]:
     """
     Entrena varios modelos, evalúa y guarda métricas + modelos.
@@ -552,6 +661,7 @@ def compare_models(
 
     series_file = Path(series_path)
     series_model_names = (
+        "baseline_tm7_sw8_blend",
         "sarima",
         "exponential_smoothing",
         "neuralprophet",
@@ -563,6 +673,20 @@ def compare_models(
     else:
         df_series = pd.read_json(series_file, lines=True, dtype=False)
         if "created" in df_series.columns and target_col in df_series.columns:
+            try:
+                baseline_series = _prepare_target_series(df_series, target_col=target_col)
+                _, baseline_val_series = _split_series(baseline_series, val_ratio=val_ratio)
+                baseline_val_series = baseline_val_series.dropna()
+                baseline = TrailingMeanWeekdayMedianBaseline().fit(baseline_series)
+                baseline_preds = baseline.predict(baseline_val_series.index)
+                metrics["baseline_tm7_sw8_blend"] = _evaluate_predictions(
+                    baseline_val_series.to_numpy(),
+                    baseline_preds,
+                )
+                joblib.dump(baseline, output_base / "baseline_tm7_sw8_blend.joblib")
+            except Exception as exc:
+                metrics["baseline_tm7_sw8_blend"] = {"error": str(exc)}
+
             if SARIMAX is None or ExponentialSmoothing is None:
                 statsmodels_error = _dependency_error("statsmodels", _STATSMODELS_IMPORT_ERROR)
                 metrics["sarima"] = statsmodels_error
@@ -628,8 +752,24 @@ def compare_models(
     with meta_path.open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
-    return {
+    result: dict[str, Any] = {
         "metrics": metrics_path,
         "metadata": meta_path,
         "models_dir": output_base,
     }
+
+    if log_mlflow:
+        try:
+            mlflow_run_id = _log_to_mlflow(
+                metrics=metrics,
+                metadata=metadata,
+                output_base=output_base,
+                target_col=target_col,
+                val_ratio=val_ratio,
+            )
+            if mlflow_run_id is not None:
+                result["mlflow_run_id"] = mlflow_run_id
+        except Exception as exc:
+            result["mlflow_error"] = str(exc)
+
+    return result

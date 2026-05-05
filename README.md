@@ -7,6 +7,34 @@ Proyecto en Python para entrenar modelos SARIMAX y RNN (PyTorch) y predecir cant
 - Docker (PostgreSQL corriendo en `localhost:5432`)
 - **Windows**: Microsoft Visual C++ Redistributable (requerido para PyTorch)
 
+### Docker Compose
+El proyecto incluye un stack con MinIO, Postgres para MLflow, MLflow Tracking, un job de entrenamiento y una API FastAPI.
+
+```bash
+docker compose up --build
+```
+
+Servicios:
+- FastAPI: http://localhost:8080
+- MLflow: http://localhost:5000
+- MinIO API: http://localhost:9000
+- MinIO Console: http://localhost:9001 (`minio` / `minio123`)
+- Postgres de MLflow: `localhost:5433` en el host, `postgres:5432` dentro de Docker
+
+El puerto host de Postgres es `5433` para no pisar una conexión local existente en `5432`.
+
+Endpoints principales de la API:
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/metrics
+curl -X POST http://localhost:8080/train
+curl http://localhost:8080/best-model
+curl "http://localhost:8080/predict?days=7"
+curl "http://localhost:8080/predict/baseline?days=7"
+```
+
+El servicio `trainer` ejecuta `python -m eda.cli training-dag` una vez. El DAG entrena los modelos, compara las métricas, elige el ganador según `SELECTION_METRIC` (`mae` por defecto) y promueve el artefacto a `reports/eda/models/best_model.*` junto con `reports/eda/models/best_model.json`. Si `MLFLOW_TRACKING_URI` está definido, registra métricas y artefactos en MLflow.
+
 ### Instalación
 1. Crear entorno virtual (opcional):
 ```bash

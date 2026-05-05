@@ -30,10 +30,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import statistics
 import sys
 from datetime import date, datetime, timedelta
 from typing import Any
+
+import pandas as pd
+
+try:
+    from eda.train import TrailingMeanWeekdayMedianBaseline
+except ImportError:  # pragma: no cover - permite ejecutar como `python eda/original_prediction.py`
+    from train import TrailingMeanWeekdayMedianBaseline
 
 
 def parse_date(s: str) -> date:
@@ -73,24 +79,19 @@ def fetch_series_strictly_before(conn: Any, before: date, limit: int = 500) -> l
 
 
 def trailing_mean_n(series: list[tuple[date, float]], target: date, n: int) -> float | None:
-    prior = [(d, v) for d, v in series if d < target]
-    if not prior:
+    model = _baseline_from_series(series, trailing_days=n)
+    if model is None:
         return None
-    last = prior[-n:] if len(prior) >= n else prior
-    if not last:
-        return None
-    return statistics.mean(v for _, v in last)
+    return model.components_for(target)["trailing_mean_7"]
 
 
 def same_weekday_median(
     series: list[tuple[date, float]], target: date, weeks_back: int = 8
 ) -> float | None:
-    wd = target.weekday()
-    start = target - timedelta(weeks=weeks_back)
-    vals = [v for d, v in series if start <= d < target and d.weekday() == wd]
-    if not vals:
+    model = _baseline_from_series(series, weekday_weeks=weeks_back)
+    if model is None:
         return None
-    return float(statistics.median(vals))
+    return model.components_for(target)["same_weekday_median_8w"]
 
 
 def blend(a: float | None, b: float | None, wa: float = 0.45, wb: float = 0.55) -> float | None:
@@ -106,8 +107,13 @@ def blend(a: float | None, b: float | None, wa: float = 0.45, wb: float = 0.55) 
 def estimate_for_target(
     series: list[tuple[date, float]], target: date, method: str
 ) -> tuple[float | None, dict[str, Any]]:
-    tm = trailing_mean_n(series, target, 7)
-    sw = same_weekday_median(series, target, weeks_back=8)
+    model = _baseline_from_series(series)
+    if model is None:
+        return None, {"trailing_mean_7": None, "same_weekday_median_8w": None}
+
+    components = model.components_for(target)
+    tm = components["trailing_mean_7"]
+    sw = components["same_weekday_median_8w"]
     if method == "trailing_mean_7":
         est = tm
     elif method == "same_weekday_median":
@@ -119,6 +125,23 @@ def estimate_for_target(
         "same_weekday_median_8w": None if sw is None else round(sw, 2),
     }
     return est, comp
+
+
+def _baseline_from_series(
+    series: list[tuple[date, float]],
+    trailing_days: int = 7,
+    weekday_weeks: int = 8,
+) -> TrailingMeanWeekdayMedianBaseline | None:
+    if not series:
+        return None
+
+    dates = [d for d, _ in series]
+    values = [v for _, v in series]
+    pd_series = pd.Series(values, index=pd.to_datetime(dates), dtype=float)
+    return TrailingMeanWeekdayMedianBaseline(
+        trailing_days=trailing_days,
+        weekday_weeks=weekday_weeks,
+    ).fit(pd_series)
 
 
 def main() -> int:

@@ -40,3 +40,12 @@ def get_all_ad_spends() -> list[dict]:
         ### TODO: Quitar el filtro de fecha para obtener todos los datos
         f"where date >= '{DATE_FILTER}'"))
         return result.fetchall()
+
+def get_all_event_starts() -> list[dict]:
+    with _engine.connect() as conn:
+        result = conn.execute(text(
+            f'SELECT "{_settings.events_start_date_col}" AS "startDate" '
+            f"FROM {_settings.events_table} "
+            f'WHERE "{_settings.events_start_date_col}" >= \'{DATE_FILTER}\''
+        ))
+        return result.fetchall()

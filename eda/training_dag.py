@@ -32,6 +32,30 @@ PREDICT_STRATEGIES = {
 }
 
 
+def _temp_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.tmp")
+
+
+def _remove_existing(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
+def _atomic_copy(source_path: Path, destination_path: Path) -> None:
+    tmp_path = _temp_path(destination_path)
+    _remove_existing(tmp_path)
+    shutil.copy2(source_path, tmp_path)
+    tmp_path.replace(destination_path)
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    tmp_path = _temp_path(path)
+    _remove_existing(tmp_path)
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    tmp_path.replace(path)
+
+
 def select_best_model(metrics: dict[str, Any], metric_name: str = "mae") -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     for model_name, model_metrics in metrics.items():
@@ -71,7 +95,7 @@ def promote_best_model(
 
     suffix = source_path.suffix
     promoted_model_path = output_base / f"best_model{suffix}"
-    shutil.copy2(source_path, promoted_model_path)
+    _atomic_copy(source_path, promoted_model_path)
 
     deployment = {
         **best_model,
@@ -83,8 +107,7 @@ def promote_best_model(
         "predict_strategy": PREDICT_STRATEGIES.get(model_name, "unsupported"),
     }
     deployment_path = output_base / "best_model.json"
-    with deployment_path.open("w", encoding="utf-8") as f:
-        json.dump(deployment, f, indent=2)
+    _atomic_write_json(deployment_path, deployment)
 
     return {
         "best_model": model_name,
@@ -104,6 +127,7 @@ def run_training_dag(
     val_ratio: float = 0.2,
     random_state: int = 42,
     selection_metric: str = "mae",
+    hyperparameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     training_result = compare_models(
         input_path=input_path,
@@ -113,6 +137,7 @@ def run_training_dag(
         val_ratio=val_ratio,
         random_state=random_state,
         log_mlflow=False,
+        hyperparameters=hyperparameters,
     )
 
     metrics_path = Path(training_result["metrics"])
@@ -140,6 +165,7 @@ def run_training_dag(
             output_base=Path(output_dir),
             target_col=target_col,
             val_ratio=val_ratio,
+            hyperparameters=hyperparameters,
         )
         if mlflow_run_id is not None:
             result["mlflow_run_id"] = mlflow_run_id

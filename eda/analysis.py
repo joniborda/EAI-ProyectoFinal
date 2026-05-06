@@ -11,6 +11,11 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _remove_existing(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
 def _save_plot(filename: str, output_dir: Path | None) -> None:
     if output_dir is None:
         return
@@ -470,6 +475,7 @@ def run_analysis(
     in_dir = Path(input_dir)
     orders_path = in_dir / "orders.jsonl"
     ad_spends_path = in_dir / "ad_spends.jsonl"
+    events_path = in_dir / "events.jsonl"
 
     if not orders_path.exists():
         raise FileNotFoundError(f"No existe el dataset de órdenes: {orders_path}")
@@ -512,15 +518,18 @@ def run_analysis(
     # Combinar con ad_spends si está disponible
     if ad_spends_path.exists():
         ad_spends_df = pd.read_json(ad_spends_path, lines=True, dtype=False)
+        events_df = pd.read_json(events_path, lines=True, dtype=False) if events_path.exists() else None
         plot_ad_spends_metrics(ad_spends_df, with_plots, output_dir=output_dir)
         df_combined = build_combined_with_ad_spends(
             df_group_orders_per_day=df_group_orders_per_day,
             ad_spends_df=ad_spends_df,
             df_daily_unique_customers=df_daily_unique_customers,
             df_daily_new_customers=df_daily_new_customers,
+            events_df=events_df,
         )
 
         combined_path = in_dir / "combined.jsonl"
+        _remove_existing(combined_path)
         df_combined.to_json(combined_path, orient="records", lines=True, date_format="iso")
 
         print("Combined DataFrame:")
@@ -535,14 +544,16 @@ def build_combined_with_ad_spends(
     ad_spends_df: pd.DataFrame,
     df_daily_unique_customers: pd.DataFrame,
     df_daily_new_customers: pd.DataFrame,
+    events_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
-    Une órdenes diarias con ad_spends y agrega métricas de clientes.
+    Une órdenes diarias con ad_spends, métricas de clientes y fechas de eventos.
     """
     df_group_orders_per_day = df_group_orders_per_day.copy()
     ad_spends_df = ad_spends_df.copy()
     df_daily_unique_customers = df_daily_unique_customers.copy()
     df_daily_new_customers = df_daily_new_customers.copy()
+    events_df = events_df.copy() if events_df is not None else None
 
     # Normalizar tipos de fecha para evitar merges object vs datetime64
     df_group_orders_per_day["created"] = pd.to_datetime(
@@ -565,7 +576,7 @@ def build_combined_with_ad_spends(
           .sort_values('day')
     )
     df_combined['orders'] = df_combined['orders'].fillna(0).astype(int)
-    df_combined['created'] = pd.to_datetime(df_combined['created'])
+    df_combined['created'] = pd.to_datetime(df_combined['day'])
     df_combined['created_weekday'] = df_combined['created'].dt.dayofweek
     df_combined['created_month'] = df_combined['created'].dt.month
     df_combined['created'] = df_combined['created'].dt.date
@@ -574,6 +585,11 @@ def build_combined_with_ad_spends(
     df_combined = pd.merge(df_combined, df_daily_new_customers, on='created', how='left')
     df_combined['unique_customers'] = df_combined['unique_customers'].fillna(0).astype(int)
     df_combined['new_customers'] = df_combined['new_customers'].fillna(0).astype(int)
+    df_combined['event_start'] = 0
+    if events_df is not None and "startDate" in events_df.columns:
+        events_df["startDate"] = pd.to_datetime(events_df["startDate"], errors="coerce").dt.date
+        event_dates = set(events_df["startDate"].dropna())
+        df_combined['event_start'] = df_combined['created'].isin(event_dates).astype(int)
     df_combined = df_combined.drop(columns=['day'])
 
     return df_combined

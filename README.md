@@ -19,6 +19,7 @@ Servicios:
 - MLflow: http://localhost:5000
 - MinIO API: http://localhost:9000
 - MinIO Console: http://localhost:9001 (`minio` / `minio123`)
+- Airflow: http://localhost:8081 (`admin` / `admin`)
 - Postgres de MLflow: `localhost:5433` en el host, `postgres:5432` dentro de Docker
 
 El puerto host de Postgres es `5433` para no pisar una conexión local existente en `5432`.
@@ -34,6 +35,14 @@ curl "http://localhost:8080/predict/baseline?days=7"
 ```
 
 El servicio `trainer` ejecuta `python -m eda.cli training-dag` una vez. El DAG entrena los modelos, compara las métricas, elige el ganador según `SELECTION_METRIC` (`mae` por defecto) y promueve el artefacto a `reports/eda/models/best_model.*` junto con `reports/eda/models/best_model.json`. Si `MLFLOW_TRACKING_URI` está definido, registra métricas y artefactos en MLflow.
+
+Airflow también está disponible como orquestador visual. El DAG `sales_forecasting_training` vive en `airflow/dags/sales_forecasting_training.py` y ejecuta:
+`build_datasets` → `build_combined_dataset` → `build_features` → `train_and_promote`.
+Para levantarlo:
+```bash
+docker compose up --build airflow-init airflow-webserver airflow-scheduler
+```
+Desde la UI de Airflow se puede usar **Trigger DAG w/ config** para cambiar `selection_metric`, `val_ratio`, `random_state` e hiperparámetros de modelos como Random Forest, XGBoost, CatBoost, LSTM, NeuralProphet y TFT. Esos valores se guardan también en MLflow como parámetros `hp_*`.
 
 ### Instalación
 1. Crear entorno virtual (opcional):
@@ -64,8 +73,12 @@ cp .env.example .env
 
 ### Variables de entorno (DB y JSONB)
 - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
+- `DB_DRIVER` (default: `psycopg2`)  # driver SQLAlchemy para PostgreSQL
+- `DOCKER_DB_HOST` (default: `host.docker.internal`)  # host de la DB visto desde Docker
 - `ORDERS_TABLE` (default: `orders`)
+- `EVENTS_TABLE` (default: `events`)
 - `ORDERS_DATE_COL` (default: `created`)  # columna fecha de la orden (timestamptz)
+- `EVENTS_START_DATE_COL` (default: `startDate`)  # fecha de comienzo del evento
 - `ORDERS_LINE_ITEMS_COL` (default: `line_items`)  # JSONB array de ítems
 - `ITEM_PRODUCT_ID_KEY` (default: `product_id`)  # clave en cada ítem JSON
 - `ITEM_QUANTITY_KEY` (default: `quantity`)  # clave en cada ítem JSON
@@ -156,7 +169,7 @@ print(evaluate("12345", model="sarimax", test_horizon=14))
 
 ### Notas
 - La serie se agrega por día y se rellenan días sin ventas con 0.
-- Features adicionales: lags de `adSpend` y `orders`, y `revenue_growth` (pct_change de `totalRevenue`).
+- Features adicionales: lags de `adSpend` y `orders`, `revenue_growth` (pct_change de `totalRevenue`) y señales de inicio de eventos (`event_start`, `event_start_next_1`) usando solo `events.startDate`.
 - La ventana deslizante genera `reports/eda/features/windows.npz` con `X`, `y` y `feature_columns`.
 - `compare-models` entrena Linear/Ridge/RandomForest, XGBoost, CatBoost y NeuralProphet (si está disponible).
 - Archivos de modelo usan IDs saneados (sin `/`, espacios → `_`).

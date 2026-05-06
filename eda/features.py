@@ -11,6 +11,11 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _remove_existing(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
 def _parse_lags(lags: Iterable[int]) -> list[int]:
     parsed = sorted({int(lag) for lag in lags if int(lag) > 0})
     return parsed
@@ -71,12 +76,19 @@ def build_features(
     if "totalRevenue" in df.columns:
         df["revenue_growth"] = df["totalRevenue"].pct_change()
 
+    if "event_start" in df.columns:
+        df["event_start"] = pd.to_numeric(df["event_start"], errors="coerce").fillna(0).astype(int)
+        # La ventana usa días anteriores para predecir el siguiente día; este lead
+        # permite que el modelo vea que mañana empieza un evento conocido.
+        df["event_start_next_1"] = df["event_start"].shift(-1).fillna(0).astype(int)
+
     output_base = Path(output_dir)
     _ensure_dir(output_base)
 
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     features_path = output_base / "features.jsonl"
+    _remove_existing(features_path)
     df.to_json(features_path, orient="records", lines=True, date_format="iso")
 
     numeric_cols = _select_numeric_features(df, target_col=target_col)
@@ -92,6 +104,7 @@ def build_features(
     )
 
     windows_path = output_base / "windows.npz"
+    _remove_existing(windows_path)
     np.savez_compressed(
         windows_path,
         X=x_window,

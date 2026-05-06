@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,51 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _remove_existing(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
+def _temp_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.tmp")
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    tmp_path = _temp_path(path)
+    _remove_existing(tmp_path)
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    tmp_path.replace(path)
+
+
+def _atomic_joblib_dump(payload: Any, path: Path) -> None:
+    tmp_path = _temp_path(path)
+    _remove_existing(tmp_path)
+    joblib.dump(payload, tmp_path)
+    tmp_path.replace(path)
+
+
+def _atomic_torch_save(payload: Any, path: Path) -> None:
+    tmp_path = _temp_path(path)
+    _remove_existing(tmp_path)
+    torch.save(payload, tmp_path)
+    tmp_path.replace(path)
+
+
+def _atomic_xgboost_save(model: Any, path: Path) -> None:
+    tmp_path = _temp_path(path)
+    _remove_existing(tmp_path)
+    model.save_model(tmp_path)
+    tmp_path.replace(path)
+
+
+def _atomic_lightning_checkpoint(trainer: Any, path: Path) -> None:
+    tmp_path = _temp_path(path)
+    _remove_existing(tmp_path)
+    trainer.save_checkpoint(tmp_path)
+    tmp_path.replace(path)
+
+
 def _load_windows(npz_path: Path) -> tuple[np.ndarray, np.ndarray, list[str]]:
     data = np.load(npz_path, allow_pickle=True)
     x_window = data["X"]
@@ -137,12 +183,34 @@ def _evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, f
     return {"mae": float(mae), "rmse": float(rmse), "mape": float(mape)}
 
 
+def _hp_int(hyperparameters: dict[str, Any], key: str, default: int) -> int:
+    value = hyperparameters.get(key, default)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _hp_float(hyperparameters: dict[str, Any], key: str, default: float) -> float:
+    value = hyperparameters.get(key, default)
+    if value is None:
+        return default
+    return float(value)
+
+
+def _hp_optional_int(hyperparameters: dict[str, Any], key: str, default: int | None) -> int | None:
+    value = hyperparameters.get(key, default)
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
 def _log_to_mlflow(
     metrics: dict[str, Any],
     metadata: dict[str, Any],
     output_base: Path,
     target_col: str,
     val_ratio: float,
+    hyperparameters: dict[str, Any] | None = None,
 ) -> str | None:
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     if not tracking_uri:
@@ -162,6 +230,8 @@ def _log_to_mlflow(
                 "window_shape": json.dumps(metadata["window_shape"]),
             }
         )
+        if hyperparameters:
+            mlflow.log_params({f"hp_{key}": str(value) for key, value in hyperparameters.items()})
         for model_name, model_metrics in metrics.items():
             if not isinstance(model_metrics, dict):
                 continue
@@ -291,26 +361,27 @@ def _standardize_train_val(
     return x_train_scaled, x_val_scaled, y_train_scaled, scalers
 
 
-def _build_model_registry(random_state: int) -> dict[str, Any]:
+def _build_model_registry(random_state: int, hyperparameters: dict[str, Any] | None = None) -> dict[str, Any]:
+    hp = hyperparameters or {}
     registry: dict[str, Any] = {
         "linear_regression": LinearRegression(),
-        "ridge": Ridge(alpha=1.0, random_state=random_state),
+        "ridge": Ridge(alpha=_hp_float(hp, "ridge_alpha", 1.0), random_state=random_state),
         "random_forest": RandomForestRegressor(
-            n_estimators=300,
-            max_depth=None,
-            min_samples_split=2,
-            min_samples_leaf=1,
+            n_estimators=_hp_int(hp, "random_forest_n_estimators", 300),
+            max_depth=_hp_optional_int(hp, "random_forest_max_depth", None),
+            min_samples_split=_hp_int(hp, "random_forest_min_samples_split", 2),
+            min_samples_leaf=_hp_int(hp, "random_forest_min_samples_leaf", 1),
             random_state=random_state,
             n_jobs=-1,
         ),
     }
     if xgb is not None:
         registry["xgboost"] = xgb.XGBRegressor(
-            n_estimators=500,
-            max_depth=6,
-            learning_rate=0.05,
-            subsample=0.9,
-            colsample_bytree=0.9,
+            n_estimators=_hp_int(hp, "xgboost_n_estimators", 500),
+            max_depth=_hp_int(hp, "xgboost_max_depth", 6),
+            learning_rate=_hp_float(hp, "xgboost_learning_rate", 0.05),
+            subsample=_hp_float(hp, "xgboost_subsample", 0.9),
+            colsample_bytree=_hp_float(hp, "xgboost_colsample_bytree", 0.9),
             objective="reg:squarederror",
             random_state=random_state,
         )
@@ -318,9 +389,9 @@ def _build_model_registry(random_state: int) -> dict[str, Any]:
         registry["xgboost"] = {"error": "XGBoost no está instalado."}
     if CatBoostRegressor is not None:
         registry["catboost"] = CatBoostRegressor(
-            iterations=500,
-            learning_rate=0.05,
-            depth=6,
+            iterations=_hp_int(hp, "catboost_iterations", 500),
+            learning_rate=_hp_float(hp, "catboost_learning_rate", 0.05),
+            depth=_hp_int(hp, "catboost_depth", 6),
             loss_function="RMSE",
             random_seed=random_state,
             verbose=False,
@@ -335,6 +406,7 @@ def _train_neuralprophet(
     target_col: str,
     val_ratio: float,
     output_dir: Path,
+    hyperparameters: dict[str, Any] | None = None,
 ) -> dict[str, float]:
     if NeuralProphet is None:
         raise RuntimeError("NeuralProphet no está disponible.")
@@ -348,13 +420,26 @@ def _train_neuralprophet(
     train_df = series_df.iloc[:split_idx]
     val_df = series_df.iloc[split_idx:]
 
-    model = NeuralProphet()
+    hp = hyperparameters or {}
+    model_kwargs: dict[str, Any] = {}
+    if "neuralprophet_epochs" in hp:
+        model_kwargs["epochs"] = _hp_int(hp, "neuralprophet_epochs", 40)
+    if "neuralprophet_learning_rate" in hp:
+        model_kwargs["learning_rate"] = _hp_float(hp, "neuralprophet_learning_rate", 1.0)
+    model = NeuralProphet(**model_kwargs)
     with _neuralprophet_torch_unsafe_weights():
-        model.fit(train_df, freq="D")
-        forecast = model.predict(val_df)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="X does not have valid feature names, but StandardScaler was fitted with feature names",
+                category=UserWarning,
+            )
+            model.fit(train_df, freq="D")
+            forecast = model.predict(val_df)
     metrics = _evaluate_predictions(val_df["y"].to_numpy(), forecast["yhat1"].to_numpy())
 
-    joblib.dump(model, output_dir / "neuralprophet.joblib")
+    model_path = output_dir / "neuralprophet.joblib"
+    _atomic_joblib_dump(model, model_path)
     return metrics
 
 
@@ -383,7 +468,8 @@ def _train_sarima(
     preds = fitted.forecast(steps=len(val_series))
     metrics = _evaluate_predictions(val_series.to_numpy(), preds.to_numpy())
 
-    joblib.dump(fitted, output_dir / "sarima.joblib")
+    model_path = output_dir / "sarima.joblib"
+    _atomic_joblib_dump(fitted, model_path)
     return metrics
 
 
@@ -413,7 +499,8 @@ def _train_exponential_smoothing(
     preds = fitted.forecast(len(val_series))
     metrics = _evaluate_predictions(val_series.to_numpy(), preds.to_numpy())
 
-    joblib.dump(fitted, output_dir / "exponential_smoothing.joblib")
+    model_path = output_dir / "exponential_smoothing.joblib"
+    _atomic_joblib_dump(fitted, model_path)
     return metrics
 
 
@@ -426,6 +513,10 @@ def _train_lstm(
     random_state: int,
     epochs: int = 50,
     batch_size: int = 32,
+    hidden_size: int = 64,
+    num_layers: int = 2,
+    dropout: float = 0.2,
+    learning_rate: float = 1e-3,
 ) -> dict[str, float]:
     if torch is None or nn is None or DataLoader is None or TensorDataset is None:
         raise RuntimeError("torch no está disponible.")
@@ -438,13 +529,13 @@ def _train_lstm(
     )
 
     class _LSTMRegressor(nn.Module):  # type: ignore[misc]
-        def __init__(self, input_size: int, hidden_size: int = 64) -> None:
+        def __init__(self, input_size: int) -> None:
             super().__init__()
             self.lstm = nn.LSTM(
                 input_size=input_size,
                 hidden_size=hidden_size,
-                num_layers=2,
-                dropout=0.2,
+                num_layers=num_layers,
+                dropout=dropout if num_layers > 1 else 0.0,
                 batch_first=True,
             )
             self.head = nn.Sequential(
@@ -459,7 +550,7 @@ def _train_lstm(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = _LSTMRegressor(input_size=x_train.shape[-1]).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.MSELoss()
 
     train_dataset = TensorDataset(
@@ -484,15 +575,20 @@ def _train_lstm(
     preds = preds_scaled * float(scalers["y_std"]) + float(scalers["y_mean"])
     metrics = _evaluate_predictions(y_val, preds)
 
-    torch.save(
+    model_path = output_dir / "lstm.pt"
+    _atomic_torch_save(
         {
             "model_state_dict": model.state_dict(),
             "input_size": x_train.shape[-1],
+            "hidden_size": hidden_size,
+            "num_layers": num_layers,
+            "dropout": dropout,
+            "learning_rate": learning_rate,
             "scalers": scalers,
             "epochs": epochs,
             "batch_size": batch_size,
         },
-        output_dir / "lstm.pt",
+        model_path,
     )
     return metrics
 
@@ -505,6 +601,12 @@ def _train_temporal_fusion_transformer(
     random_state: int,
     max_encoder_length: int = 28,
     max_epochs: int = 10,
+    batch_size: int = 32,
+    learning_rate: float = 0.03,
+    hidden_size: int = 16,
+    attention_head_size: int = 2,
+    dropout: float = 0.1,
+    hidden_continuous_size: int = 8,
 ) -> dict[str, float]:
     missing = []
     if torch is None:
@@ -561,16 +663,16 @@ def _train_temporal_fusion_transformer(
         stop_randomization=True,
     )
 
-    train_loader = training.to_dataloader(train=True, batch_size=32, num_workers=0)
-    val_loader = validation.to_dataloader(train=False, batch_size=32, num_workers=0)
+    train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
+    val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
 
     model = TemporalFusionTransformer.from_dataset(
         training,
-        learning_rate=0.03,
-        hidden_size=16,
-        attention_head_size=2,
-        dropout=0.1,
-        hidden_continuous_size=8,
+        learning_rate=learning_rate,
+        hidden_size=hidden_size,
+        attention_head_size=attention_head_size,
+        dropout=dropout,
+        hidden_continuous_size=hidden_continuous_size,
         loss=QuantileLoss(),
         optimizer="adam",
     )
@@ -587,7 +689,8 @@ def _train_temporal_fusion_transformer(
     predictions = model.predict(val_loader).detach().cpu().numpy().reshape(-1)
     metrics = _evaluate_predictions(actuals, predictions)
 
-    trainer.save_checkpoint(output_dir / "temporal_fusion_transformer.ckpt")
+    checkpoint_path = output_dir / "temporal_fusion_transformer.ckpt"
+    _atomic_lightning_checkpoint(trainer, checkpoint_path)
     return metrics
 
 
@@ -599,6 +702,7 @@ def compare_models(
     val_ratio: float = 0.2,
     random_state: int = 42,
     log_mlflow: bool = True,
+    hyperparameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Entrena varios modelos, evalúa y guarda métricas + modelos.
@@ -624,7 +728,8 @@ def compare_models(
         val_ratio=val_ratio,
     )
 
-    registry = _build_model_registry(random_state=random_state)
+    hp = hyperparameters or {}
+    registry = _build_model_registry(random_state=random_state, hyperparameters=hp)
     metrics: dict[str, Any] = {}
 
     for name, model in registry.items():
@@ -638,9 +743,10 @@ def compare_models(
 
             model_path = output_base / f"{name}.joblib"
             if name == "xgboost" and xgb is not None:
-                model.save_model(output_base / "xgboost.json")
+                xgboost_path = output_base / "xgboost.json"
+                _atomic_xgboost_save(model, xgboost_path)
             else:
-                joblib.dump(model, model_path)
+                _atomic_joblib_dump(model, model_path)
         except Exception as exc:
             metrics[name] = {"error": str(exc)}
 
@@ -655,6 +761,12 @@ def compare_models(
                 y_val=y_val_seq,
                 output_dir=output_base,
                 random_state=random_state,
+                epochs=_hp_int(hp, "lstm_epochs", 50),
+                batch_size=_hp_int(hp, "lstm_batch_size", 32),
+                hidden_size=_hp_int(hp, "lstm_hidden_size", 64),
+                num_layers=_hp_int(hp, "lstm_num_layers", 2),
+                dropout=_hp_float(hp, "lstm_dropout", 0.2),
+                learning_rate=_hp_float(hp, "lstm_learning_rate", 1e-3),
             )
         except Exception as exc:
             metrics["lstm"] = {"error": str(exc)}
@@ -683,7 +795,8 @@ def compare_models(
                     baseline_val_series.to_numpy(),
                     baseline_preds,
                 )
-                joblib.dump(baseline, output_base / "baseline_tm7_sw8_blend.joblib")
+                model_path = output_base / "baseline_tm7_sw8_blend.joblib"
+                _atomic_joblib_dump(baseline, model_path)
             except Exception as exc:
                 metrics["baseline_tm7_sw8_blend"] = {"error": str(exc)}
 
@@ -698,6 +811,7 @@ def compare_models(
                         target_col=target_col,
                         val_ratio=val_ratio,
                         output_dir=output_base,
+                        hyperparameters=hp,
                     )
                 except Exception as exc:
                     metrics["sarima"] = {"error": str(exc)}
@@ -732,6 +846,14 @@ def compare_models(
                     val_ratio=val_ratio,
                     output_dir=output_base,
                     random_state=random_state,
+                    max_encoder_length=_hp_int(hp, "tft_max_encoder_length", 28),
+                    max_epochs=_hp_int(hp, "tft_max_epochs", 10),
+                    batch_size=_hp_int(hp, "tft_batch_size", 32),
+                    learning_rate=_hp_float(hp, "tft_learning_rate", 0.03),
+                    hidden_size=_hp_int(hp, "tft_hidden_size", 16),
+                    attention_head_size=_hp_int(hp, "tft_attention_head_size", 2),
+                    dropout=_hp_float(hp, "tft_dropout", 0.1),
+                    hidden_continuous_size=_hp_int(hp, "tft_hidden_continuous_size", 8),
                 )
             except Exception as exc:
                 metrics["temporal_fusion_transformer"] = {"error": str(exc)}
@@ -741,16 +863,15 @@ def compare_models(
 
     metrics_path = output_base / "metrics.json"
     meta_path = output_base / "metadata.json"
-    with metrics_path.open("w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
+    _atomic_write_json(metrics_path, metrics)
 
     metadata = {
         "feature_columns": feature_columns,
         "window_shape": list(x_window.shape),
         "val_ratio": val_ratio,
+        "hyperparameters": hp,
     }
-    with meta_path.open("w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
+    _atomic_write_json(meta_path, metadata)
 
     result: dict[str, Any] = {
         "metrics": metrics_path,
@@ -766,6 +887,7 @@ def compare_models(
                 output_base=output_base,
                 target_col=target_col,
                 val_ratio=val_ratio,
+                hyperparameters=hp,
             )
             if mlflow_run_id is not None:
                 result["mlflow_run_id"] = mlflow_run_id

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import typer
 from eda.db import test_connection
 from eda.data_prep import build_datasets
@@ -5,6 +8,22 @@ from eda.analysis import run_analysis
 from eda.features import build_features
 from eda.train import compare_models
 from eda.training_dag import run_training_dag
+
+
+def _parse_hyperparameters_json(value: str | None) -> dict:
+	if not value:
+		return {}
+	stripped = value.strip()
+	if not stripped.startswith(("{", "[", "null")):
+		candidate_path = Path(value)
+		if candidate_path.exists():
+			value = candidate_path.read_text(encoding="utf-8")
+	parsed = json.loads(value)
+	if parsed is None:
+		return {}
+	if not isinstance(parsed, dict):
+		raise ValueError("hyperparameters_json debe ser un objeto JSON.")
+	return parsed
 
 
 def handle_test_db() -> None:
@@ -65,8 +84,10 @@ def handle_compare_models(
 	target_col: str,
 	val_ratio: float,
 	random_state: int,
+	hyperparameters_json: str | None = None,
 ) -> None:
 	try:
+		hyperparameters = _parse_hyperparameters_json(hyperparameters_json)
 		result = compare_models(
 			input_path=input_path,
 			output_dir=output_dir,
@@ -74,6 +95,7 @@ def handle_compare_models(
 			target_col=target_col,
 			val_ratio=val_ratio,
 			random_state=random_state,
+			hyperparameters=hyperparameters,
 		)
 		typer.secho(f"Metrics: {result['metrics']}", fg=typer.colors.GREEN)
 		typer.secho(f"Metadata: {result['metadata']}", fg=typer.colors.GREEN)
@@ -91,8 +113,10 @@ def handle_training_dag(
 	val_ratio: float,
 	random_state: int,
 	selection_metric: str,
+	hyperparameters_json: str | None = None,
 ) -> None:
 	try:
+		hyperparameters = _parse_hyperparameters_json(hyperparameters_json)
 		result = run_training_dag(
 			input_path=input_path,
 			output_dir=output_dir,
@@ -101,6 +125,7 @@ def handle_training_dag(
 			val_ratio=val_ratio,
 			random_state=random_state,
 			selection_metric=selection_metric,
+			hyperparameters=hyperparameters,
 		)
 		typer.secho(f"Metrics: {result['metrics']}", fg=typer.colors.GREEN)
 		typer.secho(f"Metadata: {result['metadata']}", fg=typer.colors.GREEN)

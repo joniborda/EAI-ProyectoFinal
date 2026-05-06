@@ -60,6 +60,7 @@ def compare_models(
 	target_col: str = typer.Option("orders", help="Columna target (serie)"),
 	val_ratio: float = typer.Option(0.2, help="Porcentaje de validación"),
 	random_state: int = typer.Option(42, help="Random seed"),
+	hyperparameters_json: str | None = typer.Option(None, help="JSON o ruta a JSON con hiperparámetros"),
 ) -> None:
 	"""Entrena varios modelos y reporta métricas para comparar."""
 	handle_compare_models(
@@ -69,6 +70,7 @@ def compare_models(
 		target_col=target_col,
 		val_ratio=val_ratio,
 		random_state=random_state,
+		hyperparameters_json=hyperparameters_json,
 	)
 
 @app.command()
@@ -80,6 +82,7 @@ def training_dag(
 	val_ratio: float = typer.Option(0.2, help="Porcentaje de validación"),
 	random_state: int = typer.Option(42, help="Random seed"),
 	selection_metric: str = typer.Option("mae", help="Métrica para elegir ganador: mae|rmse|mape"),
+	hyperparameters_json: str | None = typer.Option(None, help="JSON o ruta a JSON con hiperparámetros"),
 ) -> None:
 	"""Ejecuta entrenamiento, selección del ganador y promoción para predict."""
 	handle_training_dag(
@@ -90,6 +93,7 @@ def training_dag(
 		val_ratio=val_ratio,
 		random_state=random_state,
 		selection_metric=selection_metric,
+		hyperparameters_json=hyperparameters_json,
 	)
 
 @app.command()

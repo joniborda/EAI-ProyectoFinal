@@ -184,3 +184,46 @@ El modelo RNN utiliza **12 features exógenas** por cada día:
 - **Features temporales** (6): día de la semana, día del mes, mes, trimestre, es fin de semana, semana del año
 
 Estas features ayudan al modelo a capturar patrones estacionales y comportamientos relacionados con el calendario.
+
+
+python -m eda.cli grid-search temporal_fusion_transformer --param-grid-json configs/grids/temporal_fusion_transformer_grid.json
+python -m eda.cli grid-search random_forest --param-grid-json configs/grids/random_forest_grid.json
+python -m eda.cli grid-search catboost --param-grid-json configs/grids/catboost_grid.json
+python -m eda.cli grid-search xgboost --param-grid-json configs/grids/xgboost_grid.json
+python -m eda.cli grid-search exponential_smoothing --param-grid-json configs/grids/exponential_smoothing_grid.json
+python -m eda.cli grid-search linear_regression --param-grid-json configs/grids/linear_regression_grid.json
+python -m eda.cli grid-search lstm --param-grid-json configs/grids/lstm_grid.json
+python -m eda.cli grid-search neuralprophet --param-grid-json configs/grids/neuralprophet_grid.json
+python -m eda.cli grid-search sarima --param-grid-json configs/grids/sarima_grid.json
+python -m eda.cli grid-search ridge --param-grid-json configs/grids/ridge_grid.json
+
+
+## Graficos 
+
+python -m eda.cli plot-mape-distribution \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --model-name random_forest \
+  --metric-col mape \
+  --output-path reports/eda/plots/mape_distribution_random_forest.png \
+  --no-show
+
+python -m eda.cli plot-mape-distribution \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --model-name baseline_tm7_sw8_blend \
+  --metric-col mape \
+  --output-path reports/eda/plots/mape_distribution_baseline_tm7_sw8_blend.png \
+  --no-show
+
+python -m eda.cli plot-mape-distribution \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --model-name temporal_fusion_transformer \
+  --metric-col mape \
+  --output-path reports/eda/plots/mape_distribution_temporal_fusion_transformer.png \
+  --no-show
+  
+python -m eda.cli plot-mape-distribution \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --model-name catboost \
+  --metric-col mape \
+  --output-path reports/eda/plots/mape_distribution_catboost.png \
+  --no-show

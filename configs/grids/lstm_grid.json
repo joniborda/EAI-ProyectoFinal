@@ -1,0 +1,8 @@
+{
+  "lstm_epochs": [50],
+  "lstm_batch_size": [128],
+  "lstm_hidden_size": [256],
+  "lstm_num_layers": [3],
+  "lstm_dropout": [0.05],
+  "lstm_learning_rate": [0.001, 0.0005]
+}

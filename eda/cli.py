@@ -6,6 +6,8 @@ from eda.cli_handlers import (
 	handle_build_datasets,
 	handle_build_features,
 	handle_compare_models,
+	handle_grid_search,
+	handle_plot_mape_distribution,
 	handle_test_db,
 	handle_training_dag,
 )
@@ -22,7 +24,7 @@ def build_datasets(
 	output_dir: str = typer.Option("reports/eda/data", help="Directorio de salida"),
 	fmt: str = typer.Option("jsonl", help="Formato de salida: jsonl|csv|both"),
 ) -> None:
-	"""Construye y guarda datasets (orders, ad_spends) desde la BD."""
+	"""Construye y guarda datasets (orders, ad_spends, events) desde la BD; recorta última fila de combined.jsonl si existe."""
 	handle_build_datasets(output_dir=output_dir, fmt=fmt)
 
 @app.command()
@@ -41,6 +43,7 @@ def build_features(
 	lags: str = typer.Option("1,7,30", help="Lags separados por coma"),
 	target_col: str = typer.Option("orders", help="Columna target"),
 	window_size: int = typer.Option(28, help="Tamaño de ventana deslizante"),
+	imputation_strategy: str = typer.Option("median", help="Imputación para features numéricas: mean|median"),
 ) -> None:
 	"""Construye features (lags + crecimiento) y ventanas deslizantes."""
 	handle_build_features(
@@ -49,6 +52,7 @@ def build_features(
 		lags=lags,
 		target_col=target_col,
 		window_size=window_size,
+		imputation_strategy=imputation_strategy,
 	)
 
 
@@ -94,6 +98,54 @@ def training_dag(
 		random_state=random_state,
 		selection_metric=selection_metric,
 		hyperparameters_json=hyperparameters_json,
+	)
+
+
+@app.command()
+def grid_search(
+	model_name: str = typer.Argument(..., help="Modelo a ejecutar"),
+	param_grid_json: str | None = typer.Option(None, help="JSON o ruta a JSON con rangos de hiperparámetros"),
+	input_path: str = typer.Option("reports/eda/features/windows.npz", help="Ventanas de entrenamiento"),
+	series_path: str = typer.Option("reports/eda/features/features.jsonl", help="Serie temporal"),
+	output_dir: str = typer.Option("reports/eda/grid_search", help="Directorio de salida"),
+	target_col: str = typer.Option("orders", help="Columna target (serie)"),
+	val_ratio: float = typer.Option(0.2, help="Porcentaje de validación"),
+	random_state: int = typer.Option(42, help="Random seed"),
+	selection_metric: str = typer.Option("mae", help="Métrica para elegir ganador: mae|rmse|mape"),
+) -> None:
+	"""Ejecuta grid search para un modelo específico."""
+	handle_grid_search(
+		model_name=model_name,
+		param_grid_json=param_grid_json,
+		input_path=input_path,
+		series_path=series_path,
+		output_dir=output_dir,
+		target_col=target_col,
+		val_ratio=val_ratio,
+		random_state=random_state,
+		selection_metric=selection_metric,
+	)
+
+
+@app.command()
+def plot_mape_distribution(
+	input_path: str = typer.Option("reports/eda/models/mape_distribution.jsonl", help="CSV/JSON/JSONL con valores de MAPE"),
+	output_path: str = typer.Option("reports/eda/plots/mape_distribution.png", help="PNG de salida"),
+	model_name: str | None = typer.Option("random_forest", help="Modelo a filtrar; usar vacío para no filtrar"),
+	metric_col: str = typer.Option("mape", help="Columna con MAPE"),
+	model_col: str | None = typer.Option("model", help="Columna con nombre de modelo; usar vacío si no aplica"),
+	bins: int = typer.Option(10, help="Cantidad de bins del histograma"),
+	no_show: bool = typer.Option(False, help="Guardar sin abrir ventana"),
+) -> None:
+	"""Grafica una distribución de MAPE como histograma con curva KDE."""
+	handle_plot_mape_distribution(
+		input_path=input_path,
+		output_path=output_path,
+		model_name=model_name or None,
+		metric_col=metric_col,
+		model_col=model_col or None,
+		bins=bins,
+		show=not no_show,
 	)
 
 @app.command()

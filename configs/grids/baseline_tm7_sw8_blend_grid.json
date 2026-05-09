@@ -1,0 +1,6 @@
+{
+  "baseline_trailing_days": [7, 14],
+  "baseline_weekday_weeks": [4, 8, 12],
+  "baseline_trailing_weight": [0.45],
+  "baseline_weekday_weight": [0.55]
+}

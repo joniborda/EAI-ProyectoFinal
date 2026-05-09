@@ -1,0 +1,4 @@
+{
+  "neuralprophet_epochs": [60, 40],
+  "neuralprophet_learning_rate": [0.025, 0.05]
+}

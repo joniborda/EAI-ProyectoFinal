@@ -113,6 +113,15 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
     tmp_path.replace(path)
 
 
+def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    tmp_path = _temp_path(path)
+    _remove_existing(tmp_path)
+    with tmp_path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    tmp_path.replace(path)
+
+
 def _atomic_joblib_dump(payload: Any, path: Path) -> None:
     tmp_path = _temp_path(path)
     _remove_existing(tmp_path)
@@ -181,6 +190,36 @@ def _evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, f
     rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
     mape = float(np.mean(np.abs((y_true - y_pred) / np.clip(np.abs(y_true), 1e-8, None))))
     return {"mae": float(mae), "rmse": float(rmse), "mape": float(mape)}
+
+
+def _extend_prediction_error_rows(
+    rows: list[dict[str, Any]],
+    model_name: str,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    index: pd.Index | None = None,
+) -> None:
+    actuals = np.asarray(y_true, dtype=float).reshape(-1)
+    predictions = np.asarray(y_pred, dtype=float).reshape(-1)
+    total = min(len(actuals), len(predictions))
+
+    for sample_idx in range(total):
+        actual = float(actuals[sample_idx])
+        prediction = float(predictions[sample_idx])
+        mape = abs((actual - prediction) / max(abs(actual), 1e-8))
+        if not np.isfinite(mape):
+            continue
+
+        row: dict[str, Any] = {
+            "model": model_name,
+            "sample_idx": sample_idx,
+            "y_true": actual,
+            "y_pred": prediction,
+            "mape": float(mape),
+        }
+        if index is not None and sample_idx < len(index):
+            row["created"] = str(index[sample_idx])
+        rows.append(row)
 
 
 def _hp_int(hyperparameters: dict[str, Any], key: str, default: int) -> int:
@@ -365,23 +404,23 @@ def _build_model_registry(random_state: int, hyperparameters: dict[str, Any] | N
     hp = hyperparameters or {}
     registry: dict[str, Any] = {
         "linear_regression": LinearRegression(),
-        "ridge": Ridge(alpha=_hp_float(hp, "ridge_alpha", 1.0), random_state=random_state),
+        "ridge": Ridge(alpha=_hp_float(hp, "ridge_alpha", 5.0), random_state=random_state),
         "random_forest": RandomForestRegressor(
-            n_estimators=_hp_int(hp, "random_forest_n_estimators", 300),
-            max_depth=_hp_optional_int(hp, "random_forest_max_depth", None),
+            n_estimators=_hp_int(hp, "random_forest_n_estimators", 100),
+            max_depth=_hp_optional_int(hp, "random_forest_max_depth", 8),
             min_samples_split=_hp_int(hp, "random_forest_min_samples_split", 2),
-            min_samples_leaf=_hp_int(hp, "random_forest_min_samples_leaf", 1),
+            min_samples_leaf=_hp_int(hp, "random_forest_min_samples_leaf", 3),
             random_state=random_state,
             n_jobs=-1,
         ),
     }
     if xgb is not None:
         registry["xgboost"] = xgb.XGBRegressor(
-            n_estimators=_hp_int(hp, "xgboost_n_estimators", 500),
-            max_depth=_hp_int(hp, "xgboost_max_depth", 6),
+            n_estimators=_hp_int(hp, "xgboost_n_estimators", 400),
+            max_depth=_hp_int(hp, "xgboost_max_depth", 4),
             learning_rate=_hp_float(hp, "xgboost_learning_rate", 0.05),
             subsample=_hp_float(hp, "xgboost_subsample", 0.9),
-            colsample_bytree=_hp_float(hp, "xgboost_colsample_bytree", 0.9),
+            colsample_bytree=_hp_float(hp, "xgboost_colsample_bytree", 0.8),
             objective="reg:squarederror",
             random_state=random_state,
         )
@@ -407,6 +446,7 @@ def _train_neuralprophet(
     val_ratio: float,
     output_dir: Path,
     hyperparameters: dict[str, Any] | None = None,
+    error_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, float]:
     if NeuralProphet is None:
         raise RuntimeError("NeuralProphet no está disponible.")
@@ -425,7 +465,7 @@ def _train_neuralprophet(
     if "neuralprophet_epochs" in hp:
         model_kwargs["epochs"] = _hp_int(hp, "neuralprophet_epochs", 40)
     if "neuralprophet_learning_rate" in hp:
-        model_kwargs["learning_rate"] = _hp_float(hp, "neuralprophet_learning_rate", 1.0)
+        model_kwargs["learning_rate"] = _hp_float(hp, "neuralprophet_learning_rate", 0.05)
     model = NeuralProphet(**model_kwargs)
     with _neuralprophet_torch_unsafe_weights():
         with warnings.catch_warnings():
@@ -437,6 +477,14 @@ def _train_neuralprophet(
             model.fit(train_df, freq="D")
             forecast = model.predict(val_df)
     metrics = _evaluate_predictions(val_df["y"].to_numpy(), forecast["yhat1"].to_numpy())
+    if error_rows is not None:
+        _extend_prediction_error_rows(
+            rows=error_rows,
+            model_name="neuralprophet",
+            y_true=val_df["y"].to_numpy(),
+            y_pred=forecast["yhat1"].to_numpy(),
+            index=pd.Index(val_df["ds"]),
+        )
 
     model_path = output_dir / "neuralprophet.joblib"
     _atomic_joblib_dump(model, model_path)
@@ -448,6 +496,8 @@ def _train_sarima(
     target_col: str,
     val_ratio: float,
     output_dir: Path,
+    hyperparameters: dict[str, Any] | None = None,
+    error_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, float]:
     if SARIMAX is None:
         raise RuntimeError("statsmodels no está disponible.")
@@ -457,16 +507,37 @@ def _train_sarima(
     train_series = _fill_series_for_model(train_series)
     val_series = _fill_series_for_model(val_series)
 
+    hp = hyperparameters or {}
+    order = (
+        _hp_int(hp, "sarima_p", 3),
+        _hp_int(hp, "sarima_d", 1),
+        _hp_int(hp, "sarima_q", 1),
+    )
+    seasonal_order = (
+        _hp_int(hp, "sarima_seasonal_p", 0),
+        _hp_int(hp, "sarima_seasonal_d", 1),
+        _hp_int(hp, "sarima_seasonal_q", 1),
+        _hp_int(hp, "sarima_seasonal_period", 12),
+    )
+
     model = SARIMAX(
         train_series,
-        order=(1, 1, 1),
-        seasonal_order=(1, 1, 1, 7),
-        enforce_stationarity=False,
+        order=order,
+        seasonal_order=seasonal_order,
+        enforce_stationarity=hp.get("enforce_stationarity", False),
         enforce_invertibility=False,
     )
     fitted = model.fit(disp=False)
     preds = fitted.forecast(steps=len(val_series))
     metrics = _evaluate_predictions(val_series.to_numpy(), preds.to_numpy())
+    if error_rows is not None:
+        _extend_prediction_error_rows(
+            rows=error_rows,
+            model_name="sarima",
+            y_true=val_series.to_numpy(),
+            y_pred=preds.to_numpy(),
+            index=val_series.index,
+        )
 
     model_path = output_dir / "sarima.joblib"
     _atomic_joblib_dump(fitted, model_path)
@@ -478,6 +549,7 @@ def _train_exponential_smoothing(
     target_col: str,
     val_ratio: float,
     output_dir: Path,
+    error_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, float]:
     if ExponentialSmoothing is None:
         raise RuntimeError("statsmodels no está disponible.")
@@ -498,6 +570,14 @@ def _train_exponential_smoothing(
     fitted = model.fit(optimized=True)
     preds = fitted.forecast(len(val_series))
     metrics = _evaluate_predictions(val_series.to_numpy(), preds.to_numpy())
+    if error_rows is not None:
+        _extend_prediction_error_rows(
+            rows=error_rows,
+            model_name="exponential_smoothing",
+            y_true=val_series.to_numpy(),
+            y_pred=preds.to_numpy(),
+            index=val_series.index,
+        )
 
     model_path = output_dir / "exponential_smoothing.joblib"
     _atomic_joblib_dump(fitted, model_path)
@@ -517,6 +597,7 @@ def _train_lstm(
     num_layers: int = 2,
     dropout: float = 0.2,
     learning_rate: float = 1e-3,
+    error_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, float]:
     if torch is None or nn is None or DataLoader is None or TensorDataset is None:
         raise RuntimeError("torch no está disponible.")
@@ -574,6 +655,13 @@ def _train_lstm(
         preds_scaled = model(torch.tensor(x_val_scaled, dtype=torch.float32).to(device)).cpu().numpy()
     preds = preds_scaled * float(scalers["y_std"]) + float(scalers["y_mean"])
     metrics = _evaluate_predictions(y_val, preds)
+    if error_rows is not None:
+        _extend_prediction_error_rows(
+            rows=error_rows,
+            model_name="lstm",
+            y_true=y_val,
+            y_pred=preds,
+        )
 
     model_path = output_dir / "lstm.pt"
     _atomic_torch_save(
@@ -592,7 +680,6 @@ def _train_lstm(
     )
     return metrics
 
-
 def _train_temporal_fusion_transformer(
     df: pd.DataFrame,
     target_col: str,
@@ -602,11 +689,12 @@ def _train_temporal_fusion_transformer(
     max_encoder_length: int = 28,
     max_epochs: int = 10,
     batch_size: int = 32,
-    learning_rate: float = 0.03,
+    learning_rate: float = 0.01,
     hidden_size: int = 16,
-    attention_head_size: int = 2,
+    attention_head_size: int = 1,
     dropout: float = 0.1,
-    hidden_continuous_size: int = 8,
+    hidden_continuous_size: int = 4,
+    error_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, float]:
     missing = []
     if torch is None:
@@ -688,6 +776,15 @@ def _train_temporal_fusion_transformer(
     actuals = torch.cat([y[0] for _, y in iter(val_loader)]).detach().cpu().numpy().reshape(-1)
     predictions = model.predict(val_loader).detach().cpu().numpy().reshape(-1)
     metrics = _evaluate_predictions(actuals, predictions)
+    if error_rows is not None:
+        val_index = data.loc[data["time_idx"] > training_cutoff, "created"].reset_index(drop=True)
+        _extend_prediction_error_rows(
+            rows=error_rows,
+            model_name="temporal_fusion_transformer",
+            y_true=actuals,
+            y_pred=predictions,
+            index=pd.Index(val_index.iloc[: len(actuals)]),
+        )
 
     checkpoint_path = output_dir / "temporal_fusion_transformer.ckpt"
     _atomic_lightning_checkpoint(trainer, checkpoint_path)
@@ -731,6 +828,7 @@ def compare_models(
     hp = hyperparameters or {}
     registry = _build_model_registry(random_state=random_state, hyperparameters=hp)
     metrics: dict[str, Any] = {}
+    error_rows: list[dict[str, Any]] = []
 
     for name, model in registry.items():
         if isinstance(model, dict):
@@ -740,6 +838,12 @@ def compare_models(
             model.fit(x_train, y_train)
             preds = model.predict(x_val)
             metrics[name] = _evaluate_predictions(y_val, preds)
+            _extend_prediction_error_rows(
+                rows=error_rows,
+                model_name=name,
+                y_true=y_val,
+                y_pred=preds,
+            )
 
             model_path = output_base / f"{name}.joblib"
             if name == "xgboost" and xgb is not None:
@@ -767,6 +871,7 @@ def compare_models(
                 num_layers=_hp_int(hp, "lstm_num_layers", 2),
                 dropout=_hp_float(hp, "lstm_dropout", 0.2),
                 learning_rate=_hp_float(hp, "lstm_learning_rate", 1e-3),
+                error_rows=error_rows,
             )
         except Exception as exc:
             metrics["lstm"] = {"error": str(exc)}
@@ -795,6 +900,13 @@ def compare_models(
                     baseline_val_series.to_numpy(),
                     baseline_preds,
                 )
+                _extend_prediction_error_rows(
+                    rows=error_rows,
+                    model_name="baseline_tm7_sw8_blend",
+                    y_true=baseline_val_series.to_numpy(),
+                    y_pred=baseline_preds,
+                    index=baseline_val_series.index,
+                )
                 model_path = output_base / "baseline_tm7_sw8_blend.joblib"
                 _atomic_joblib_dump(baseline, model_path)
             except Exception as exc:
@@ -812,6 +924,7 @@ def compare_models(
                         val_ratio=val_ratio,
                         output_dir=output_base,
                         hyperparameters=hp,
+                        error_rows=error_rows,
                     )
                 except Exception as exc:
                     metrics["sarima"] = {"error": str(exc)}
@@ -822,6 +935,7 @@ def compare_models(
                         target_col=target_col,
                         val_ratio=val_ratio,
                         output_dir=output_base,
+                        error_rows=error_rows,
                     )
                 except Exception as exc:
                     metrics["exponential_smoothing"] = {"error": str(exc)}
@@ -835,6 +949,7 @@ def compare_models(
                         target_col=target_col,
                         val_ratio=val_ratio,
                         output_dir=output_base,
+                        error_rows=error_rows,
                     )
                 except Exception as exc:
                     metrics["neuralprophet"] = {"error": str(exc)}
@@ -849,11 +964,12 @@ def compare_models(
                     max_encoder_length=_hp_int(hp, "tft_max_encoder_length", 28),
                     max_epochs=_hp_int(hp, "tft_max_epochs", 10),
                     batch_size=_hp_int(hp, "tft_batch_size", 32),
-                    learning_rate=_hp_float(hp, "tft_learning_rate", 0.03),
+                    learning_rate=_hp_float(hp, "tft_learning_rate", 0.01),
                     hidden_size=_hp_int(hp, "tft_hidden_size", 16),
-                    attention_head_size=_hp_int(hp, "tft_attention_head_size", 2),
+                    attention_head_size=_hp_int(hp, "tft_attention_head_size", 1),
                     dropout=_hp_float(hp, "tft_dropout", 0.1),
-                    hidden_continuous_size=_hp_int(hp, "tft_hidden_continuous_size", 8),
+                    hidden_continuous_size=_hp_int(hp, "tft_hidden_continuous_size", 4),
+                    error_rows=error_rows,
                 )
             except Exception as exc:
                 metrics["temporal_fusion_transformer"] = {"error": str(exc)}
@@ -862,19 +978,23 @@ def compare_models(
                 metrics[name] = {"error": "Faltan columnas created/target_col en series."}
 
     metrics_path = output_base / "metrics.json"
+    mape_distribution_path = output_base / "mape_distribution.jsonl"
     meta_path = output_base / "metadata.json"
     _atomic_write_json(metrics_path, metrics)
+    _atomic_write_jsonl(mape_distribution_path, error_rows)
 
     metadata = {
         "feature_columns": feature_columns,
         "window_shape": list(x_window.shape),
         "val_ratio": val_ratio,
         "hyperparameters": hp,
+        "mape_distribution_rows": len(error_rows),
     }
     _atomic_write_json(meta_path, metadata)
 
     result: dict[str, Any] = {
         "metrics": metrics_path,
+        "mape_distribution": mape_distribution_path,
         "metadata": meta_path,
         "models_dir": output_base,
     }

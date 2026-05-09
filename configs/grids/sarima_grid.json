@@ -1,0 +1,9 @@
+{
+  "sarima_p": [3,2],
+  "sarima_d": [1],
+  "sarima_q": [2],
+  "sarima_seasonal_p": [0],
+  "sarima_seasonal_d": [1],
+  "sarima_seasonal_q": [1, 2],
+  "sarima_seasonal_period": [12]
+}

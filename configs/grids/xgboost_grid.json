@@ -1,0 +1,7 @@
+{
+  "xgboost_n_estimators": [200, 300, 400, 500],
+  "xgboost_max_depth": [4, 6],
+  "xgboost_learning_rate": [0.01, 0.05],
+  "xgboost_subsample": [0.9, 1.0],
+  "xgboost_colsample_bytree": [0.8, 1.0]
+}

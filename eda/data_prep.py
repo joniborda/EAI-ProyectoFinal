@@ -17,6 +17,34 @@ def _remove_existing(path: Path) -> None:
         path.unlink()
 
 
+def trim_combined_incomplete_last_day(
+    df: pd.DataFrame, *, date_col: str = "created"
+) -> pd.DataFrame:
+    """
+    Ordena por fecha y elimina la última fila (día en curso / datos incompletos típicos al exportar).
+    """
+    if df.empty or date_col not in df.columns:
+        return df.copy()
+    out = (
+        df.assign(_sort_ts=pd.to_datetime(df[date_col], errors="coerce"))
+        .sort_values("_sort_ts")
+        .drop(columns=["_sort_ts"])
+        .reset_index(drop=True)
+    )
+    return out.iloc[:-1].reset_index(drop=True)
+
+
+def trim_existing_combined_jsonl(output_dir: str | Path) -> None:
+    """Si existe combined.jsonl, lo reescribe sin la última fila por día."""
+    path = Path(output_dir) / "combined.jsonl"
+    if not path.exists():
+        return
+    df = pd.read_json(path, lines=True, dtype=False)
+    trimmed = trim_combined_incomplete_last_day(df)
+    _remove_existing(path)
+    trimmed.to_json(path, orient="records", lines=True, date_format="iso")
+
+
 def _save_dataframe(
     df: pd.DataFrame,
     base_path: Path,
@@ -112,12 +140,15 @@ def build_datasets(
 ) -> dict[str, dict[str, Path]]:
     """
     Construye y guarda datasets base desde la BD.
+    Si ya existe combined.jsonl (p. ej. tras un analyze previo), quita la última fila (día incompleto).
     """
-    return {
+    out: dict[str, dict[str, Path]] = {
         "orders": build_orders_dataset(output_dir=output_dir, fmt=fmt),
         "ad_spends": build_ad_spends_dataset(output_dir=output_dir, fmt=fmt),
         "events": build_events_dataset(output_dir=output_dir, fmt=fmt),
     }
+    trim_existing_combined_jsonl(output_dir)
+    return out
 
 
 

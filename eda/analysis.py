@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 from matplotlib import pyplot as plt
+
+from eda.data_prep import trim_combined_incomplete_last_day
 from matplotlib import dates as mdates
 
 
@@ -527,6 +529,7 @@ def run_analysis(
             df_daily_new_customers=df_daily_new_customers,
             events_df=events_df,
         )
+        df_combined = trim_combined_incomplete_last_day(df_combined)
 
         combined_path = in_dir / "combined.jsonl"
         _remove_existing(combined_path)

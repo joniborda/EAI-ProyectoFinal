@@ -7,3 +7,4 @@ reports/eda/data/*.jsonl
 *.ckpt
 lightning_logs/
 catboost_info/
+reports/eda/grid_search/**/*

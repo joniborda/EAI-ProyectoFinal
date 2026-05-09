@@ -1,0 +1,5 @@
+{
+  "catboost_iterations": [200, 500],
+  "catboost_learning_rate": [0.03, 0.05, 0.1],
+  "catboost_depth": [4, 6, 8]
+}

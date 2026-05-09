@@ -1,0 +1,6 @@
+{
+  "random_forest_n_estimators": [100, 200, 300, 400, 500],
+  "random_forest_max_depth": [null, 8, 16],
+  "random_forest_min_samples_split": [2, 3, 4, 5],
+  "random_forest_min_samples_leaf": [1, 2, 3]
+}

@@ -6,7 +6,6 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -16,6 +15,7 @@ from eda.train import (
     _prepare_target_series,
 )
 from eda.training_dag import run_training_dag
+from eda.winner_predict import predict_winner
 
 
 DEFAULT_WINDOWS_PATH = Path(os.getenv("WINDOWS_PATH", "/app/reports/eda/features/windows.npz"))
@@ -63,20 +63,6 @@ def _read_best_model_metadata(model_output_dir: Path) -> dict[str, Any]:
         )
     with metadata_path.open("r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def _resolve_promoted_model_path(model_output_dir: Path, metadata: dict[str, Any]) -> Path:
-    filename = metadata.get("promoted_model_filename")
-    if isinstance(filename, str):
-        candidate = model_output_dir / filename
-        if candidate.exists():
-            return candidate
-
-    candidate = Path(metadata["promoted_model_path"])
-    if candidate.exists():
-        return candidate
-
-    raise HTTPException(status_code=404, detail=f"No existe el modelo promovido: {candidate}")
 
 
 @app.get("/health")
@@ -129,50 +115,24 @@ def predict(
     series_path: str = Query(default=str(DEFAULT_FEATURES_PATH)),
     target_col: str = Query(default=DEFAULT_TARGET_COL),
 ) -> dict[str, Any]:
-    metadata = _read_best_model_metadata(Path(model_output_dir))
-    strategy = metadata.get("predict_strategy")
-    if strategy != "future_daily_baseline":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"El modelo ganador '{metadata.get('model_name')}' usa estrategia '{strategy}', "
-                "que no soporta forecast diario multi-step con los datos disponibles."
-            ),
-        )
-
     series = _read_features(Path(series_path), target_col=target_col)
     first_day = start_date or _next_date_after(series)
-    model_path = _resolve_promoted_model_path(Path(model_output_dir), metadata)
-    model = joblib.load(model_path)
-    daily: list[dict[str, Any]] = []
-    for offset in range(days):
-        target_day = first_day + timedelta(days=offset)
-        components = model.components_for(target_day)
-        prediction = model.predict_one(target_day)
-        daily.append(
-            {
-                "date": target_day.isoformat(),
-                "prediction": round(prediction, 2),
-                "components": {
-                    "trailing_mean_7": None
-                    if components["trailing_mean_7"] is None
-                    else round(components["trailing_mean_7"], 2),
-                    "same_weekday_median_8w": None
-                    if components["same_weekday_median_8w"] is None
-                    else round(components["same_weekday_median_8w"], 2),
-                },
-            }
+    try:
+        return predict_winner(
+            model_output_dir=Path(model_output_dir),
+            series_path=Path(series_path),
+            target_col=target_col,
+            first_day=first_day,
+            days=days,
         )
-
-    return {
-        "model_name": metadata["model_name"],
-        "metric_name": metadata["metric_name"],
-        "metric_value": metadata["metric_value"],
-        "target_col": target_col,
-        "from": first_day.isoformat(),
-        "days": days,
-        "daily": daily,
-    }
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/predict/baseline")

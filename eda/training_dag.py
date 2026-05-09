@@ -22,16 +22,6 @@ MODEL_ARTIFACTS = {
     "xgboost": "xgboost.json",
 }
 
-PREDICT_STRATEGIES = {
-    "baseline_tm7_sw8_blend": "future_daily_baseline",
-    "linear_regression": "one_step_window",
-    "ridge": "one_step_window",
-    "random_forest": "one_step_window",
-    "catboost": "one_step_window",
-    "xgboost": "one_step_window",
-}
-
-
 def _temp_path(path: Path) -> Path:
     return path.with_name(f".{path.name}.tmp")
 
@@ -104,7 +94,7 @@ def promote_best_model(
         "promoted_model_filename": promoted_model_path.name,
         "source_path": str(source_path),
         "promoted_model_path": str(promoted_model_path),
-        "predict_strategy": PREDICT_STRATEGIES.get(model_name, "unsupported"),
+        "predict_strategy": "winner",
     }
     deployment_path = output_base / "best_model.json"
     _atomic_write_json(deployment_path, deployment)

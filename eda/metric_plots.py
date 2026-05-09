@@ -227,3 +227,162 @@ def plot_mape_distribution(
             plt.close(fig)
 
     return output_file
+
+
+def _plot_true_vs_predictions_pillow(
+    output_path: Path,
+    x: np.ndarray,
+    y_t: np.ndarray,
+    y_p: np.ndarray,
+    title_lines: list[str],
+    x_label: str,
+) -> None:
+    """Gráfico True vs Pred sin matplotlib (evita bugs de savefig en algunos entornos)."""
+    width, height = 1000, 620
+    left, right, top, bottom = 85, 45, 110, 75
+    pw, ph = width - left - right, height - top - bottom
+
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    if n < 2:
+        raise ValueError("Se necesitan al menos 2 puntos para dibujar la serie.")
+
+    x_min, x_max = float(x.min()), float(x.max())
+    span_x = x_max - x_min if x_max > x_min else 1.0
+    y_min = float(min(y_t.min(), y_p.min()))
+    y_max = float(max(y_t.max(), y_p.max()))
+    span_y = y_max - y_min
+    if span_y < 1e-9:
+        y_min -= 1.0
+        y_max += 1.0
+        span_y = y_max - y_min
+
+    def px_x(xv: float) -> int:
+        return int(left + (float(xv) - x_min) / span_x * pw)
+
+    def px_y(yv: float) -> int:
+        return int(top + ph - (float(yv) - y_min) / span_y * ph)
+
+    # Ejes
+    draw.line((left, top + ph, left + pw, top + ph), fill="black", width=2)
+    draw.line((left, top, left, top + ph), fill="black", width=2)
+
+    # Grilla horizontal ligera
+    for k in range(1, 6):
+        yy = y_min + (k / 6) * span_y
+        ypix = px_y(yy)
+        draw.line((left, ypix, left + pw, ypix), fill="#e0e0e0", width=1)
+
+    pts_t = [(px_x(x[i]), px_y(y_t[i])) for i in range(n)]
+    pts_p = [(px_x(x[i]), px_y(y_p[i])) for i in range(n)]
+    draw.line(pts_t, fill="#1f77b4", width=2)
+    draw.line(pts_p, fill="#d62728", width=2)
+
+    ty = 12
+    for line in title_lines:
+        _draw_text(draw, (20, ty), line)
+        ty += 18
+
+    _draw_text(draw, (left, height - 55), x_label)
+    _draw_text(draw, (12, top + ph // 2), "Values")
+
+    # Ticks Y (5)
+    for k in range(0, 6):
+        yy = y_min + (k / 5) * span_y
+        ypix = px_y(yy)
+        draw.line((left - 4, ypix, left, ypix), fill="black", width=1)
+        _draw_text(draw, (left - 72, ypix - 6), f"{yy:.2g}")
+
+    # Ticks X (inicio, fin)
+    _draw_text(draw, (left - 5, top + ph + 8), f"{x_min:.4g}")
+    _draw_text(draw, (left + pw - 40, top + ph + 8), f"{x_max:.4g}")
+
+    # Leyenda simple
+    leg_y = top + 8
+    draw.line((left + pw - 160, leg_y + 6, left + pw - 140, leg_y + 6), fill="#1f77b4", width=3)
+    _draw_text(draw, (left + pw - 135, leg_y), "True")
+    draw.line((left + pw - 160, leg_y + 26, left + pw - 140, leg_y + 26), fill="#d62728", width=3)
+    _draw_text(draw, (left + pw - 135, leg_y + 20), "Prediction")
+
+    img.save(output_path)
+
+
+def plot_true_vs_predictions(
+    input_path: str | Path,
+    model_name: str,
+    output_path: str | Path | None = None,
+    *,
+    target_col: str = "orders",
+    product_id: str | None = None,
+    model_col: str = "model",
+    show: bool = True,
+) -> Path:
+    """
+    Serie temporal de validación: valores reales vs predichos (desde mape_distribution.jsonl).
+
+    El archivo debe contener filas con al menos: model, y_true, y_pred (y opcionalmente created, product_id).
+    """
+    input_file = Path(input_path)
+    if not input_file.exists():
+        raise FileNotFoundError(f"No existe el archivo: {input_file}")
+
+    df = _load_metric_frame(input_file)
+    if model_col not in df.columns:
+        raise ValueError(f"No existe la columna '{model_col}' en el input.")
+    mask = df[model_col].astype(str).str.lower() == model_name.lower()
+    df = df.loc[mask].copy()
+    if df.empty:
+        raise ValueError(f"No hay filas para el modelo '{model_name}'.")
+
+    if product_id is not None and "product_id" in df.columns:
+        df = df[df["product_id"].astype(str) == str(product_id)]
+        if df.empty:
+            raise ValueError(f"No hay filas para product_id={product_id!r} en ese modelo.")
+
+    for col in ("y_true", "y_pred"):
+        if col not in df.columns:
+            raise ValueError(f"Falta la columna '{col}'. Ejecutá compare-models o training-dag para generar mape_distribution.jsonl.")
+
+    df["y_true"] = pd.to_numeric(df["y_true"], errors="coerce")
+    df["y_pred"] = pd.to_numeric(df["y_pred"], errors="coerce")
+    df = df.dropna(subset=["y_true", "y_pred"])
+    if df.empty:
+        raise ValueError("No quedaron filas con y_true/y_pred numéricos.")
+
+    if "created" in df.columns and df["created"].notna().any():
+        df["_x"] = pd.to_datetime(df["created"], errors="coerce")
+        df = df.dropna(subset=["_x"]).sort_values("_x")
+        x = (df["_x"] - df["_x"].iloc[0]).dt.total_seconds().to_numpy(dtype=float) / 86400.0
+        x_label = "Días desde el inicio del tramo"
+        df = df.drop(columns=["_x"])
+    elif "sample_idx" in df.columns:
+        df = df.sort_values("sample_idx")
+        x = np.arange(len(df), dtype=float)
+        x_label = "Timestamp"
+    else:
+        df = df.reset_index(drop=True)
+        x = np.arange(len(df), dtype=float)
+        x_label = "Timestamp"
+
+    y_t = df["y_true"].to_numpy(dtype=float)
+    y_p = df["y_pred"].to_numpy(dtype=float)
+    mape_pct = float(np.mean(np.abs((y_t - y_p) / np.clip(np.abs(y_t), 1e-8, None))) * 100.0)
+
+    out = Path(output_path) if output_path else Path(f"reports/eda/plots/true_vs_pred_{model_name}.png")
+    _ensure_dir(out.parent)
+
+    title_extra = f"Product: {product_id}" if product_id else f"Target: {target_col}"
+    title_lines = [
+        "True values vs Prediction",
+        title_extra,
+        f"MAPE: {mape_pct:.2f}%",
+        f"Model: {model_name}",
+    ]
+    _plot_true_vs_predictions_pillow(out, x, y_t, y_p, title_lines, x_label)
+    if show:
+        Image.open(out).show()
+
+    return out

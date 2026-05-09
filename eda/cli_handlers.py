@@ -218,3 +218,28 @@ def handle_plot_mape_distribution(
 	except Exception as e:
 		typer.secho(f"Error generando gráfico MAPE: {e}", fg=typer.colors.RED)
 		raise typer.Exit(code=1)
+
+
+def handle_plot_true_vs_predictions(
+	model_name: str,
+	input_path: str,
+	output_path: str | None,
+	target_col: str,
+	product_id: str | None,
+	show: bool,
+) -> None:
+	try:
+		from eda.metric_plots import plot_true_vs_predictions
+
+		result = plot_true_vs_predictions(
+			input_path=input_path,
+			model_name=model_name,
+			output_path=output_path,
+			target_col=target_col,
+			product_id=product_id,
+			show=show,
+		)
+		typer.secho(f"Plot: {result}", fg=typer.colors.GREEN)
+	except Exception as e:
+		typer.secho(f"Error generando gráfico true vs pred: {e}", fg=typer.colors.RED)
+		raise typer.Exit(code=1)

@@ -8,6 +8,7 @@ from eda.cli_handlers import (
 	handle_compare_models,
 	handle_grid_search,
 	handle_plot_mape_distribution,
+	handle_plot_true_vs_predictions,
 	handle_test_db,
 	handle_training_dag,
 )
@@ -147,6 +148,36 @@ def plot_mape_distribution(
 		bins=bins,
 		show=not no_show,
 	)
+
+
+@app.command("plot-predictions")
+def plot_predictions(
+	model_name: str = typer.Argument(..., help="Nombre del modelo (ej. random_forest, temporal_fusion_transformer)"),
+	input_path: str = typer.Option(
+		"reports/eda/models/mape_distribution.jsonl",
+		help="JSONL con y_true/y_pred por modelo (salida de compare-models / training-dag)",
+	),
+	output_path: str | None = typer.Option(
+		None,
+		help="PNG de salida (por defecto reports/eda/plots/true_vs_pred_<modelo>.png)",
+	),
+	target_col: str = typer.Option("orders", help="Texto en el título si no hay product_id"),
+	product_id: str | None = typer.Option(
+		None,
+		help="Filtrar por columna product_id si existe en el JSONL",
+	),
+	no_show: bool = typer.Option(False, help="Guardar sin abrir ventana"),
+) -> None:
+	"""Gráfico True vs Prediction en validación para un modelo."""
+	handle_plot_true_vs_predictions(
+		model_name=model_name,
+		input_path=input_path,
+		output_path=output_path,
+		target_col=target_col,
+		product_id=product_id,
+		show=not no_show,
+	)
+
 
 @app.command()
 def prepare_data(no_with_plots: bool = typer.Option(False, help="(Deprecado)")) -> None:

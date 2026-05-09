@@ -227,3 +227,48 @@ python -m eda.cli plot-mape-distribution \
   --metric-col mape \
   --output-path reports/eda/plots/mape_distribution_catboost.png \
   --no-show
+
+# True vs prediction (validación); requiere haber corrido compare-models o training-dag antes
+python -m eda.cli plot-predictions random_forest \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --output-path reports/eda/plots/true_vs_pred_random_forest.png \
+  --target-col orders \
+  --no-show
+
+python -m eda.cli plot-predictions temporal_fusion_transformer --no-show
+
+python -m eda.cli plot-predictions temporal_fusion_transformer \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --output-path reports/eda/plots/true_vs_pred_temporal_fusion_transformer.png \
+  --target-col orders \
+  --no-show
+
+python -m eda.cli plot-predictions sarima \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --output-path reports/eda/plots/true_vs_pred_sarima.png \
+  --target-col orders \
+  --no-show
+
+python -m eda.cli plot-predictions ridge \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --output-path reports/eda/plots/true_vs_pred_ridge.png \
+  --target-col orders \
+  --no-show
+
+python -m eda.cli plot-predictions exponential_smoothing \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --output-path reports/eda/plots/true_vs_pred_exponential_smoothing.png \
+  --target-col orders \
+  --no-show
+
+python -m eda.cli plot-predictions linear_regression \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --output-path reports/eda/plots/true_vs_pred_linear_regression.png \
+  --target-col orders \
+  --no-show
+
+python -m eda.cli plot-predictions baseline_tm7_sw8_blend \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --output-path reports/eda/plots/true_vs_pred_baseline_tm7_sw8_blend.png \
+  --target-col orders \
+  --no-show

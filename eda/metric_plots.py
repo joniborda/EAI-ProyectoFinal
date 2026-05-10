@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -154,8 +155,74 @@ def _plot_kde(ax: Any, values: np.ndarray) -> None:
     ax.plot(x_grid, y_grid, color="#2f76bd", linewidth=2)
 
 
-def _draw_text(draw: ImageDraw.ImageDraw, position: tuple[int, int], text: str, fill: str = "black") -> None:
-    draw.text(position, text, fill=fill, font=ImageFont.load_default())
+# Tamaños en px (TrueType): cuerpo/títulos/leyenda; eje X un ~1.5× más grande que el cuerpo.
+_TRUE_VS_PRED_AXIS_FONT_BASE = 12
+_TRUE_VS_PRED_DATE_LABEL_SCALE = 1.5
+_TRUE_VS_PRED_BODY_FONT_PX = max(
+    8, int(round(_TRUE_VS_PRED_AXIS_FONT_BASE * _TRUE_VS_PRED_DATE_LABEL_SCALE))
+)
+_TRUE_VS_PRED_X_FONT_PX = max(
+    10, int(round(_TRUE_VS_PRED_BODY_FONT_PX))
+)
+_TRUE_VS_PRED_TITLE_LINE_SKIP = int(round(18 * _TRUE_VS_PRED_DATE_LABEL_SCALE))
+
+
+def _pillow_truetype_candidates() -> list[Path]:
+    """Rutas típicas con glifos Latin-1 / Unicode (acentos en español)."""
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    return [
+        Path(windir) / "Fonts" / "segoeui.ttf",
+        Path(windir) / "Fonts" / "arial.ttf",
+        Path(windir) / "Fonts" / "calibri.ttf",
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+        Path("/Library/Fonts/Arial.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+        Path("/System/Library/Fonts/Helvetica.ttc"),
+    ]
+
+
+def _pillow_truetype(size: int) -> ImageFont.FreeTypeFont | None:
+    for path in _pillow_truetype_candidates():
+        if not path.is_file():
+            continue
+        try:
+            if path.suffix.lower() == ".ttc":
+                return ImageFont.truetype(str(path), size=size, index=0)
+            return ImageFont.truetype(str(path), size=size)
+        except OSError:
+            continue
+    return None
+
+
+def _pillow_font(size: int | None = None, *, unicode_glyphs: bool = False) -> ImageFont.ImageFont:
+    """
+    Fuente para Pillow. Con ``unicode_glyphs=True`` intenta TrueType del sistema
+    (necesario para acentos: í, á, ñ, …). Si no hay ninguna, cae al bitmap por defecto
+    (puede omitir o deformar acentos).
+    """
+    px = 10 if size is None else int(size)
+    if unicode_glyphs:
+        ttf = _pillow_truetype(px)
+        if ttf is not None:
+            return ttf
+    if size is None:
+        return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=px)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _draw_text(
+    draw: ImageDraw.ImageDraw,
+    position: tuple[int, int],
+    text: str,
+    fill: str = "black",
+    font: ImageFont.ImageFont | None = None,
+) -> None:
+    draw.text(position, text, fill=fill, font=font or ImageFont.load_default())
 
 
 def _plot_mape_distribution_with_pillow(
@@ -344,8 +411,18 @@ def _plot_true_vs_predictions_pillow(
     x_label: str,
 ) -> None:
     """Gráfico True vs Pred sin matplotlib (evita bugs de savefig en algunos entornos)."""
-    width, height = 1000, 620
-    left, right, top, bottom = 85, 45, 110, 75
+    font_body = _pillow_font(_TRUE_VS_PRED_BODY_FONT_PX, unicode_glyphs=True)
+    font_x = _pillow_font(_TRUE_VS_PRED_X_FONT_PX, unicode_glyphs=True)
+
+    width, height = 1000, 575
+    left, right, bottom = 118, 45, 62
+    skip = _TRUE_VS_PRED_TITLE_LINE_SKIP
+    pad_top = 18
+    pad_below_titles = 18
+    n_titles = len(title_lines)
+    title_block = pad_top + max(0, n_titles) * skip + pad_below_titles
+    # Menos líneas de título -> menos margen superior -> más alto el área del gráfico
+    top = min(140, max(76, title_block))
     pw, ph = width - left - right, height - top - bottom
 
     img = Image.new("RGB", (width, height), "white")
@@ -387,31 +464,39 @@ def _plot_true_vs_predictions_pillow(
     draw.line(pts_t, fill="#1f77b4", width=2)
     draw.line(pts_p, fill="#d62728", width=2)
 
-    ty = 12
+    ty = pad_top
     for line in title_lines:
-        _draw_text(draw, (20, ty), line)
-        ty += 18
+        _draw_text(draw, (22, ty), line, font=font_body)
+        ty += skip
 
-    _draw_text(draw, (left, height - 55), x_label)
-    _draw_text(draw, (12, top + ph // 2), "Values")
+    _draw_text(draw, (14, top + ph // 2), "Values", font=font_body)
 
     # Ticks Y (5)
+    y_lbl_w = 88
     for k in range(0, 6):
         yy = y_min + (k / 5) * span_y
         ypix = px_y(yy)
         draw.line((left - 4, ypix, left, ypix), fill="black", width=1)
-        _draw_text(draw, (left - 72, ypix - 6), f"{yy:.2g}")
+        _draw_text(draw, (left - y_lbl_w, ypix - 8), f"{yy:.2g}", font=font_body)
 
-    # Ticks X (inicio, fin)
-    _draw_text(draw, (left - 5, top + ph + 8), f"{x_min:.4g}")
-    _draw_text(draw, (left + pw - 40, top + ph + 8), f"{x_max:.4g}")
+    # Ticks X (inicio, fin) y leyenda del eje, pegados bajo el eje para acortar la imagen
+    x_num_y = top + ph + 8
+    _draw_text(draw, (left - 5, x_num_y), f"{x_min:.4g}", font=font_x)
+    _draw_text(draw, (left + pw - 68, x_num_y), f"{x_max:.4g}", font=font_x)
+    x_label_y = x_num_y + 26
+    _draw_text(draw, (left, x_label_y), x_label, font=font_x)
 
     # Leyenda simple
-    leg_y = top + 8
+    leg_gap = int(round(22 * _TRUE_VS_PRED_DATE_LABEL_SCALE))
+    leg_y = top + 10
     draw.line((left + pw - 160, leg_y + 6, left + pw - 140, leg_y + 6), fill="#1f77b4", width=3)
-    _draw_text(draw, (left + pw - 135, leg_y), "True")
-    draw.line((left + pw - 160, leg_y + 26, left + pw - 140, leg_y + 26), fill="#d62728", width=3)
-    _draw_text(draw, (left + pw - 135, leg_y + 20), "Prediction")
+    _draw_text(draw, (left + pw - 135, leg_y - 2), "True", font=font_body)
+    draw.line(
+        (left + pw - 160, leg_y + leg_gap + 6, left + pw - 140, leg_y + leg_gap + 6),
+        fill="#d62728",
+        width=3,
+    )
+    _draw_text(draw, (left + pw - 135, leg_y + leg_gap - 2), "Prediction", font=font_body)
 
     img.save(output_path)
 
@@ -482,10 +567,8 @@ def plot_true_vs_predictions(
 
     title_extra = f"Product: {product_id}" if product_id else f"Target: {target_col}"
     title_lines = [
-        "True values vs Prediction",
         title_extra,
-        f"MAPE: {mape_pct:.2f}%",
-        f"Model: {model_name}",
+        f"Model: {model_name} - MAPE: {mape_pct:.2f}%",
     ]
     _plot_true_vs_predictions_pillow(out, x, y_t, y_p, title_lines, x_label)
     if show:

@@ -305,6 +305,13 @@ python -m eda.cli plot-predictions baseline_tm7_sw8_blend \
   --no-show
 
 
+python -m eda.cli plot-predictions neuralprophet \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --output-path reports/eda/plots/true_vs_pred_neuralprophet.png \
+  --target-col orders \
+  --no-show
+
+
 # Serie diaria (sin sumar); --group-months solo espacia las marcas del eje X (p. ej. cada 3 meses)
 python -m eda.cli plot-orders-events --group-months 3 --no-show --output-path reports/eda/plots/orders_with_events.png
 

@@ -8,6 +8,7 @@ from eda.cli_handlers import (
 	handle_compare_models,
 	handle_grid_search,
 	handle_plot_mape_distribution,
+	handle_plot_orders_events,
 	handle_plot_true_vs_predictions,
 	handle_test_db,
 	handle_training_dag,
@@ -133,12 +134,15 @@ def plot_mape_distribution(
 	input_path: str = typer.Option("reports/eda/models/mape_distribution.jsonl", help="CSV/JSON/JSONL con valores de MAPE"),
 	output_path: str = typer.Option("reports/eda/plots/mape_distribution.png", help="PNG de salida"),
 	model_name: str | None = typer.Option("random_forest", help="Modelo a filtrar; usar vacío para no filtrar"),
-	metric_col: str = typer.Option("mape", help="Columna con MAPE"),
+	metric_col: str = typer.Option(
+		"mape",
+		help="mape | rmse | squared_error | abs_error (rmse/squared_error/abs_error usan y_true,y_pred del JSONL)",
+	),
 	model_col: str | None = typer.Option("model", help="Columna con nombre de modelo; usar vacío si no aplica"),
 	bins: int = typer.Option(10, help="Cantidad de bins del histograma"),
 	no_show: bool = typer.Option(False, help="Guardar sin abrir ventana"),
 ) -> None:
-	"""Grafica una distribución de MAPE como histograma con curva KDE."""
+	"""Histograma + KDE de MAPE, o de (y-ŷ)² / |y-ŷ| para ver errores alineados con RMSE / escala del target."""
 	handle_plot_mape_distribution(
 		input_path=input_path,
 		output_path=output_path,
@@ -147,6 +151,38 @@ def plot_mape_distribution(
 		model_col=model_col or None,
 		bins=bins,
 		show=not no_show,
+	)
+
+
+@app.command("plot-orders-events")
+def plot_orders_events(
+	orders_path: str | None = typer.Option(
+		None,
+		help="orders.jsonl; por defecto reports/eda/data/orders.jsonl si existe, si no BD",
+	),
+	events_path: str | None = typer.Option(
+		None,
+		help="events.jsonl; por defecto reports/eda/data/events.jsonl si existe, si no BD",
+	),
+	from_db: bool = typer.Option(False, help="Forzar lectura de órdenes y eventos desde la BD"),
+	output_path: str | None = typer.Option(
+		None,
+		help="Guardar PNG (ej. reports/eda/plots/orders_with_events.png)",
+	),
+	no_show: bool = typer.Option(False, help="Guardar sin abrir ventana"),
+	group_months: int = typer.Option(
+		3,
+		help="Marcas del eje X cada N meses (serie siempre diaria, sin sumar). 1 = cada mes",
+	),
+) -> None:
+	"""Órdenes por día (línea diaria); eje X con marcas cada N meses; líneas verticales en eventos."""
+	handle_plot_orders_events(
+		orders_path=orders_path,
+		events_path=events_path,
+		from_db=from_db,
+		output_path=output_path,
+		show=not no_show,
+		group_months=group_months,
 	)
 
 

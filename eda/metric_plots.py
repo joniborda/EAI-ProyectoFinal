@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 from PIL import Image, ImageDraw, ImageFont
 from scipy.stats import gaussian_kde
 
@@ -69,9 +70,77 @@ def _metric_values(
         raise ValueError(f"No hay valores válidos de {metric_col}{target}.")
 
     # Si el MAPE viene como proporcion (0.82), lo convertimos a porcentaje (82%).
-    if values.abs().max() <= 1.5:
+    if metric_col.lower() == "mape" and values.abs().max() <= 1.5:
         values = values * 100
     return values
+
+
+def _distribution_metric_mode(metric_col: str) -> tuple[str, str | None]:
+    """
+    Devuelve (modo, columna).
+
+    modo: mape | abs_error | squared_error (métricas derivadas de y_true/y_pred).
+    columna: nombre en el dataframe si modo es mape u otra columna cruda.
+    """
+    key = metric_col.strip().lower()
+    if key in ("rmse", "squared_error", "sq_error", "squared_residual"):
+        return "squared_error", None
+    if key in ("abs_error", "absolute_error", "ae"):
+        return "abs_error", None
+    return "column", metric_col
+
+
+def _derived_error_series(
+    df: pd.DataFrame,
+    mode: str,
+    model_name: str | None,
+    model_col: str | None,
+) -> pd.Series:
+    if model_name and model_col:
+        if model_col not in df.columns:
+            raise ValueError(f"No existe la columna de modelo: {model_col}")
+        df = df.loc[df[model_col].astype(str).str.lower() == model_name.lower()].copy()
+    if "y_true" not in df.columns or "y_pred" not in df.columns:
+        raise ValueError(
+            "Para abs_error / squared_error / rmse hacen falta columnas 'y_true' y 'y_pred' "
+            "(p. ej. reports/eda/models/mape_distribution.jsonl tras compare-models o training-dag)."
+        )
+    yt = pd.to_numeric(df["y_true"], errors="coerce")
+    yp = pd.to_numeric(df["y_pred"], errors="coerce")
+    ok = yt.notna() & yp.notna()
+    if mode == "abs_error":
+        values = (yt[ok] - yp[ok]).abs()
+    else:
+        values = (yt[ok] - yp[ok]) ** 2
+    if values.empty:
+        target = f" para {model_name}" if model_name else ""
+        raise ValueError(f"No hay valores válidos de error{target}.")
+    return values
+
+
+def _format_freq_tick(value: float, _pos: int | None) -> str:
+    """Etiquetas compactas para conteos / densidad en el eje Y."""
+    v = float(value)
+    if v == 0:
+        return "0"
+    av = abs(v)
+    if av >= 1e6:
+        return f"{v:.2e}"
+    if av >= 1e4:
+        return f"{v:.4g}"
+    if av >= 100 and abs(v - round(v)) < 0.05 * av:
+        return str(int(round(v)))
+    if abs(v - round(v)) < 1e-3:
+        return str(int(round(v)))
+    return f"{v:.3g}"
+
+
+def _apply_distribution_axes(ax: Any) -> None:
+    """Evita demasiadas marcas en Y (p. ej. histogramas muy sesgados)."""
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=14, integer=False, prune=None))
+    ax.yaxis.set_major_formatter(FuncFormatter(_format_freq_tick))
+    ax.tick_params(axis="y", labelsize=10)
+    ax.tick_params(axis="x", labelsize=9)
 
 
 def _plot_kde(ax: Any, values: np.ndarray) -> None:
@@ -92,12 +161,14 @@ def _draw_text(draw: ImageDraw.ImageDraw, position: tuple[int, int], text: str, 
 def _plot_mape_distribution_with_pillow(
     output_file: Path,
     values: np.ndarray,
-    label: str,
     bins: int,
     show: bool,
+    *,
+    title: str,
+    x_axis_label: str,
 ) -> None:
-    width, height = 900, 600
-    left, right, top, bottom = 85, 35, 65, 85
+    width, height = 920, 600
+    left, right, top, bottom = 108, 35, 65, 85
     plot_w = width - left - right
     plot_h = height - top - bottom
 
@@ -114,6 +185,18 @@ def _plot_mape_distribution_with_pillow(
     counts, edges = np.histogram(values, bins=bins, range=hist_range)
     max_count = max(1, int(counts.max()))
 
+    kde_peak = 0.0
+    y_grid: np.ndarray | None = None
+    x_grid_kde: np.ndarray | None = None
+    if len(values) >= 2 and not np.isclose(values.std(), 0):
+        x_grid_kde = np.linspace(edges[0], edges[-1], 200)
+        kde = gaussian_kde(values)
+        bin_width = edges[1] - edges[0]
+        y_grid = kde(x_grid_kde) * len(values) * bin_width
+        kde_peak = float(y_grid.max())
+
+    y_top = max(float(max_count), kde_peak, 1.0)
+
     draw.line((left, top, left, top + plot_h), fill="black", width=2)
     draw.line((left, top + plot_h, left + plot_w, top + plot_h), fill="black", width=2)
 
@@ -122,40 +205,43 @@ def _plot_mape_distribution_with_pillow(
         x0 = left + int(idx * plot_w / len(counts)) + bar_gap
         x1 = left + int((idx + 1) * plot_w / len(counts)) - bar_gap
         y1 = top + plot_h
-        y0 = y1 - int((count / max_count) * plot_h)
+        y0 = y1 - int((count / y_top) * plot_h)
         draw.rectangle((x0, y0, x1, y1), fill="#8fb1d1", outline="black")
 
-    if len(values) >= 2 and not np.isclose(values.std(), 0):
-        x_grid = np.linspace(edges[0], edges[-1], 200)
-        kde = gaussian_kde(values)
-        bin_width = edges[1] - edges[0]
-        y_grid = kde(x_grid) * len(values) * bin_width
-        y_max = max(max_count, float(y_grid.max()))
+    if y_grid is not None and x_grid_kde is not None and len(edges) > 1:
+        span_x = edges[-1] - edges[0]
         points = [
             (
-                left + int(((x - edges[0]) / (edges[-1] - edges[0])) * plot_w),
-                top + plot_h - int((y / y_max) * plot_h),
+                left + int(((x - edges[0]) / span_x) * plot_w),
+                top + plot_h - int((float(y) / y_top) * plot_h),
             )
-            for x, y in zip(x_grid, y_grid)
+            for x, y in zip(x_grid_kde, y_grid)
         ]
         if len(points) > 1:
             draw.line(points, fill="#2f76bd", width=3)
 
-    for tick in range(0, max_count + 1):
-        y = top + plot_h - int((tick / max_count) * plot_h)
-        draw.line((left - 5, y, left, y), fill="black")
-        _draw_text(draw, (left - 35, y - 6), str(tick))
+    y_tick_vals = np.linspace(0.0, y_top, num=6)
+    label_left = max(6, left - 88)
+    for tv in y_tick_vals:
+        ypix = top + plot_h - int((tv / y_top) * plot_h)
+        draw.line((left - 5, ypix, left, ypix), fill="black")
+        lbl = _format_freq_tick(float(tv), None)
+        _draw_text(draw, (label_left, ypix - 6), lbl)
 
     x_min, x_max = float(edges[0]), float(edges[-1])
+    span = x_max - x_min
+    fmt = ".4g" if span > 0 and span < 0.01 else ".3g" if span < 10 else ".2g"
     for idx in range(5):
         ratio = idx / 4
         x = left + int(ratio * plot_w)
         value = x_min + ratio * (x_max - x_min)
         draw.line((x, top + plot_h, x, top + plot_h + 5), fill="black")
-        _draw_text(draw, (x - 20, top + plot_h + 10), f"{value:.1f}")
+        _draw_text(draw, (x - 28, top + plot_h + 10), f"{value:{fmt}}")
 
-    _draw_text(draw, (width // 2 - 165, 25), f"{label} - Test MAPE Distribution")
-    _draw_text(draw, (width // 2 - 145, height - 35), "Mean Absolute Percentage Error (%)")
+    tw = len(title) * 6 // 2
+    _draw_text(draw, (max(10, width // 2 - tw), 25), title)
+    xw = len(x_axis_label) * 6 // 2
+    _draw_text(draw, (max(10, width // 2 - xw), height - 35), x_axis_label)
     _draw_text(draw, (15, height // 2 - 10), "Frequency")
 
     image.save(output_file)
@@ -173,11 +259,14 @@ def plot_mape_distribution(
     show: bool = True,
 ) -> Path:
     """
-    Genera un histograma de MAPE con curva KDE desde resultados de experimentos.
+    Histograma con KDE de errores en validación.
 
-    El input puede ser CSV/JSONL con varias filas, por ejemplo columnas:
-    model,test_mape. Tambien acepta un metrics.json simple, aunque para ver una
-    distribucion real se necesitan varias mediciones del mismo modelo.
+    - metric_col=mape (default): columna ``mape`` (proporción o %).
+    - metric_col=rmse o squared_error: distribución de (y-ŷ)² por fila; la raíz
+      de la media de esos valores es el RMSE agregado (no hay un “RMSE por punto”).
+    - metric_col=abs_error: |y-ŷ| por observación (misma escala que el target).
+
+    Requiere ``y_true``/``y_pred`` para las métricas derivadas (p. ej. mape_distribution.jsonl).
     """
     input_file = Path(input_path)
     if not input_file.exists():
@@ -187,15 +276,29 @@ def plot_mape_distribution(
     _ensure_dir(output_file.parent)
 
     df = _load_metric_frame(input_file)
-    values = _metric_values(
-        df=df,
-        metric_col=metric_col,
-        model_name=model_name,
-        model_col=model_col,
-    )
+    label = model_name.replace("_", " ").title() if model_name else "Modelo"
+    mode, col = _distribution_metric_mode(metric_col)
+
+    if mode == "abs_error":
+        values = _derived_error_series(df, "abs_error", model_name, model_col)
+        dist_title = f"{label} - Test Absolute Error Distribution"
+        xlabel = "|y - ŷ| (units of target)"
+    elif mode == "squared_error":
+        values = _derived_error_series(df, "squared_error", model_name, model_col)
+        dist_title = f"{label} - Test Squared Error Distribution"
+        xlabel = "(y - ŷ)²  (√mean = RMSE)"
+    else:
+        values = _metric_values(
+            df=df,
+            metric_col=col or metric_col,
+            model_name=model_name,
+            model_col=model_col,
+        )
+        dist_title = f"{label} - Test MAPE Distribution"
+        xlabel = "Mean Absolute Percentage Error (%)"
+
     values_np = values.to_numpy(dtype=float)
 
-    label = model_name.replace("_", " ").title() if model_name else "Modelo"
     fig, ax = plt.subplots(figsize=(9, 6))
     ax.hist(
         values_np,
@@ -205,10 +308,12 @@ def plot_mape_distribution(
         alpha=0.85,
     )
     _plot_kde(ax, values_np)
-    ax.set_title(f"{label} - Test MAPE Distribution")
-    ax.set_xlabel("Mean Absolute Percentage Error (%)")
-    ax.set_ylabel("Frequency")
-    fig.subplots_adjust(left=0.12, right=0.97, bottom=0.13, top=0.9)
+    ax.set_title(dist_title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Frequency", labelpad=14)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=14, integer=False, prune=None))
+    _apply_distribution_axes(ax)
+    fig.subplots_adjust(left=0.2, right=0.97, bottom=0.14, top=0.9)
     try:
         fig.savefig(output_file, dpi=150)
         if show:
@@ -218,9 +323,10 @@ def plot_mape_distribution(
         _plot_mape_distribution_with_pillow(
             output_file=output_file,
             values=values_np,
-            label=label,
             bins=bins,
             show=show,
+            title=dist_title,
+            x_axis_label=xlabel,
         )
     else:
         if not show:

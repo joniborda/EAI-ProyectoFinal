@@ -200,32 +200,63 @@ python -m eda.cli grid-search ridge --param-grid-json configs/grids/ridge_grid.j
 
 ## Graficos 
 
+`plot-mape-distribution` genera un histograma con KDE desde `reports/eda/models/mape_distribution.jsonl` (salida de `compare-models` o `training-dag`). Opciones de `--metric-col`:
+
+- **`mape`** (default): usa la columna `mape` por observación (proporción o porcentaje).
+- **`rmse`** o **`squared_error`**: distribución de **(y − ŷ)²** por fila; la raíz cuadrada de la **media** de esos valores coincide con el RMSE agregado del tramo de validación (no existe un “RMSE por punto” como el MAPE por punto).
+- **`abs_error`**: distribución de **|y − ŷ|**, en las mismas unidades que el target.
+
+Las opciones `rmse` / `squared_error` / `abs_error` requieren columnas `y_true` y `y_pred` en el JSONL (no hace falta una columna `rmse` en el archivo).
+
 python -m eda.cli plot-mape-distribution \
   --input-path reports/eda/models/mape_distribution.jsonl \
   --model-name random_forest \
-  --metric-col mape \
+  --metric-col rmse \
   --output-path reports/eda/plots/mape_distribution_random_forest.png \
   --no-show
 
 python -m eda.cli plot-mape-distribution \
   --input-path reports/eda/models/mape_distribution.jsonl \
   --model-name baseline_tm7_sw8_blend \
-  --metric-col mape \
+  --metric-col rmse \
   --output-path reports/eda/plots/mape_distribution_baseline_tm7_sw8_blend.png \
   --no-show
 
 python -m eda.cli plot-mape-distribution \
   --input-path reports/eda/models/mape_distribution.jsonl \
   --model-name temporal_fusion_transformer \
-  --metric-col mape \
+  --metric-col rmse \
   --output-path reports/eda/plots/mape_distribution_temporal_fusion_transformer.png \
   --no-show
   
 python -m eda.cli plot-mape-distribution \
   --input-path reports/eda/models/mape_distribution.jsonl \
   --model-name catboost \
-  --metric-col mape \
+  --metric-col rmse \
   --output-path reports/eda/plots/mape_distribution_catboost.png \
+  --no-show
+
+# Misma fuente de datos: error al cuadrado por observación (relacionado con RMSE)
+python -m eda.cli plot-mape-distribution \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --model-name catboost \
+  --metric-col rmse \
+  --output-path reports/eda/plots/squared_error_catboost.png \
+  --no-show
+
+python -m eda.cli plot-mape-distribution \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --model-name neuralprophet \
+  --metric-col rmse \
+  --output-path reports/eda/plots/rmse_neuralprophet.png \
+  --no-show
+
+
+python -m eda.cli plot-mape-distribution \
+  --input-path reports/eda/models/mape_distribution.jsonl \
+  --model-name catboost \
+  --metric-col rmse \
+  --output-path reports/eda/plots/rmse_catboost.png \
   --no-show
 
 # True vs prediction (validación); requiere haber corrido compare-models o training-dag antes
@@ -272,3 +303,12 @@ python -m eda.cli plot-predictions baseline_tm7_sw8_blend \
   --output-path reports/eda/plots/true_vs_pred_baseline_tm7_sw8_blend.png \
   --target-col orders \
   --no-show
+
+
+# Serie diaria (sin sumar); --group-months solo espacia las marcas del eje X (p. ej. cada 3 meses)
+python -m eda.cli plot-orders-events --group-months 3 --no-show --output-path reports/eda/plots/orders_with_events.png
+
+
+
+python -m eda.cli plot-orders-events --no-show --output-path reports/eda/plots/orders_with_events.png
+python -m eda.cli plot-orders-events --from-db --no-show --output-path reports/eda/plots/orders_with_events.png

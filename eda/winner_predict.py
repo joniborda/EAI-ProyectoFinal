@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,9 @@ def _append_future_row_recursive(
     target_day: date,
     target_col: str,
     feature_columns: list[str],
+    *,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
 ) -> None:
     last = extended.iloc[-1]
     new_row = last.copy()
@@ -109,6 +113,8 @@ def _append_future_row_recursive(
             new_row[col] = last.get(col, 0.0)
     extended.loc[len(extended)] = new_row
     idx = extended.index[-1]
+    if future_ad_spend and "adSpend" in extended.columns and target_day in future_ad_spend:
+        extended.loc[idx, "adSpend"] = float(future_ad_spend[target_day])
     for lag_col in feature_columns:
         if lag_col.startswith("orders_lag_"):
             k = int(lag_col.split("_")[-1])
@@ -124,7 +130,16 @@ def _append_future_row_recursive(
         cur = extended["totalRevenue"].iloc[-1]
         if pd.notna(prev) and prev != 0 and pd.notna(cur):
             extended.loc[idx, "revenue_growth"] = float((cur - prev) / prev)
-    if "event_start_next_1" in feature_columns:
+    if future_events is not None:
+        ev_today = float(future_events.get(target_day, 0.0))
+        ev_today_b = 1.0 if ev_today >= 0.5 else 0.0
+        if "event_start" in extended.columns:
+            extended.loc[idx, "event_start"] = ev_today_b
+        if "event_start_next_1" in feature_columns:
+            next_d = target_day + timedelta(days=1)
+            ev_next = float(future_events.get(next_d, 0.0))
+            extended.loc[idx, "event_start_next_1"] = 1.0 if ev_next >= 0.5 else 0.0
+    elif "event_start_next_1" in feature_columns:
         extended.loc[idx, "event_start_next_1"] = 0.0
 
 
@@ -136,11 +151,21 @@ def _predict_window_sklearn(
     target_col: str,
     first_day: date,
     days: int,
+    *,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
 ) -> list[dict[str, Any]]:
     daily: list[dict[str, Any]] = []
     for offset in range(days):
         target_d = first_day + timedelta(days=offset)
-        _append_future_row_recursive(extended, target_d, target_col, feature_columns)
+        _append_future_row_recursive(
+            extended,
+            target_d,
+            target_col,
+            feature_columns,
+            future_ad_spend=future_ad_spend,
+            future_events=future_events,
+        )
         wdf = extended[feature_columns].tail(window_size)
         if len(wdf) < window_size:
             raise ValueError("Historia insuficiente para la ventana del modelo.")
@@ -161,6 +186,9 @@ def _predict_xgboost(
     target_col: str,
     first_day: date,
     days: int,
+    *,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
 ) -> list[dict[str, Any]]:
     if xgb is None:
         raise RuntimeError("XGBoost no está instalado.")
@@ -169,7 +197,14 @@ def _predict_xgboost(
     daily: list[dict[str, Any]] = []
     for offset in range(days):
         target_d = first_day + timedelta(days=offset)
-        _append_future_row_recursive(extended, target_d, target_col, feature_columns)
+        _append_future_row_recursive(
+            extended,
+            target_d,
+            target_col,
+            feature_columns,
+            future_ad_spend=future_ad_spend,
+            future_events=future_events,
+        )
         wdf = extended[feature_columns].tail(window_size)
         x_flat = np.nan_to_num(wdf.to_numpy(dtype=np.float64).reshape(1, -1), nan=0.0)
         pred = booster.predict(x_flat)[0]
@@ -210,6 +245,9 @@ def _predict_lstm(
     target_col: str,
     first_day: date,
     days: int,
+    *,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
 ) -> list[dict[str, Any]]:
     if torch is None or nn is None:
         raise RuntimeError("PyTorch no está disponible.")
@@ -229,7 +267,14 @@ def _predict_lstm(
     y_std = float(scalers["y_std"])
     for offset in range(days):
         target_d = first_day + timedelta(days=offset)
-        _append_future_row_recursive(extended, target_d, target_col, feature_columns)
+        _append_future_row_recursive(
+            extended,
+            target_d,
+            target_col,
+            feature_columns,
+            future_ad_spend=future_ad_spend,
+            future_events=future_events,
+        )
         w = extended[feature_columns].tail(window_size).to_numpy(dtype=np.float64).reshape(1, window_size, -1)
         w = np.nan_to_num(w, nan=0.0)
         w_scaled = (w - x_mean) / x_std
@@ -426,14 +471,22 @@ def predict_winner(
     target_col: str,
     first_day: date | None,
     days: int,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
 ) -> dict[str, Any]:
     """
     Predicción multi-día según best_model.json + artefactos en model_output_dir.
+
+    future_ad_spend / future_events: solo aplican a modelos basados en ventana
+    (linear_regression, ridge, random_forest, catboost, xgboost, lstm).
     """
     out_dir = Path(model_output_dir)
     best, meta = load_training_artifacts(out_dir)
     model_name = best["model_name"]
     hp = meta.get("hyperparameters") or {}
+
+    ad_map: Mapping[date, float] | None = future_ad_spend if future_ad_spend else None
+    ev_map: Mapping[date, float] | None = future_events if future_events else None
 
     df = _read_features_df(Path(series_path), target_col)
     series = _prepare_target_series(df, target_col=target_col)
@@ -462,7 +515,11 @@ def predict_winner(
         extended = df.copy()
         _ensure_feature_frame(extended, feature_columns, target_col)
         m = joblib.load(model_path)
-        daily = _predict_window_sklearn(m, extended, feature_columns, window_size, target_col, first, days)
+        daily = _predict_window_sklearn(
+            m, extended, feature_columns, window_size, target_col, first, days,
+            future_ad_spend=ad_map,
+            future_events=ev_map,
+        )
 
     elif model_name == "xgboost":
         feature_columns = list(meta.get("feature_columns") or [])
@@ -472,7 +529,11 @@ def predict_winner(
         window_size = int(ws[1])
         extended = df.copy()
         _ensure_feature_frame(extended, feature_columns, target_col)
-        daily = _predict_xgboost(model_path, extended, feature_columns, window_size, target_col, first, days)
+        daily = _predict_xgboost(
+            model_path, extended, feature_columns, window_size, target_col, first, days,
+            future_ad_spend=ad_map,
+            future_events=ev_map,
+        )
 
     elif model_name == "lstm":
         feature_columns = list(meta.get("feature_columns") or [])
@@ -488,7 +549,11 @@ def predict_winner(
             bundle = torch.load(model_path, map_location="cpu")
         if not isinstance(bundle, dict):
             raise TypeError("Formato lstm.pt inesperado.")
-        daily = _predict_lstm(bundle, extended, feature_columns, window_size, target_col, first, days)
+        daily = _predict_lstm(
+            bundle, extended, feature_columns, window_size, target_col, first, days,
+            future_ad_spend=ad_map,
+            future_events=ev_map,
+        )
 
     elif model_name == "sarima":
         fitted = joblib.load(model_path)
@@ -516,6 +581,19 @@ def predict_winner(
         "from": first.isoformat(),
         "days": days,
         "daily": daily,
+        "future_ad_spend_provided": bool(ad_map),
+        "future_events_provided": bool(ev_map),
+        "future_overrides_supported": (
+            model_name
+            in {
+                "linear_regression",
+                "ridge",
+                "random_forest",
+                "catboost",
+                "xgboost",
+                "lstm",
+            }
+        ),
     }
     return result
 

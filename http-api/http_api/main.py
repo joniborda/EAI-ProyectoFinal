@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,72 @@ def _read_features(series_path: Path, target_col: str) -> pd.Series:
 
 def _next_date_after(series: pd.Series) -> date:
     return pd.Timestamp(series.index.max()).date() + timedelta(days=1)
+
+
+def _parse_json_date_value_list(raw: str | None, param_name: str) -> dict[date, float] | None:
+    """
+    Espera un JSON array de objetos {"date": "YYYY-MM-DD", "value": number}.
+    Devuelve None si el parámetro viene vacío u omitido.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{param_name}: JSON inválido ({exc})",
+        ) from exc
+    if data is None:
+        return None
+    if not isinstance(data, list):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{param_name}: se esperaba un array JSON, por ejemplo "
+            + '[{"date":"2026-06-01","value":100.5}]',
+        )
+    out: dict[date, float] = {}
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{param_name}[{i}]: cada elemento debe ser un objeto con "
+                '"date" y "value"',
+            )
+        if "date" not in item or "value" not in item:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{param_name}[{i}]: faltan claves date o value",
+            )
+        d_raw = item["date"]
+        if isinstance(d_raw, datetime):
+            d = d_raw.date()
+        elif isinstance(d_raw, date):
+            d = d_raw
+        elif isinstance(d_raw, str):
+            d = date.fromisoformat(d_raw.strip()[:10])
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{param_name}[{i}].date: tipo no soportado",
+            )
+        try:
+            v = float(item["value"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{param_name}[{i}].value: se esperaba un número",
+            ) from exc
+        if not math.isfinite(v):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{param_name}[{i}].value: debe ser un número finito",
+            )
+        out[d] = v
+    return out or None
 
 
 def _read_best_model_metadata(model_output_dir: Path) -> dict[str, Any]:
@@ -114,9 +181,19 @@ def predict(
     model_output_dir: str = Query(default=str(DEFAULT_MODEL_OUTPUT_DIR)),
     series_path: str = Query(default=str(DEFAULT_FEATURES_PATH)),
     target_col: str = Query(default=DEFAULT_TARGET_COL),
+    future_ad_spend: str | None = Query(
+        default=None,
+        description='Opcional. JSON: [{"date":"YYYY-MM-DD","value":123.4}, ...] gasto publicitario por día.',
+    ),
+    future_events: str | None = Query(
+        default=None,
+        description='Opcional. JSON: [{"date":"YYYY-MM-DD","value":1}, ...] con value 1 si hay evento ese día, 0 si no.',
+    ),
 ) -> dict[str, Any]:
     series = _read_features(Path(series_path), target_col=target_col)
     first_day = start_date or _next_date_after(series)
+    ad_map = _parse_json_date_value_list(future_ad_spend, "future_ad_spend")
+    ev_map = _parse_json_date_value_list(future_events, "future_events")
     try:
         return predict_winner(
             model_output_dir=Path(model_output_dir),
@@ -124,6 +201,8 @@ def predict(
             target_col=target_col,
             first_day=first_day,
             days=days,
+            future_ad_spend=ad_map,
+            future_events=ev_map,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

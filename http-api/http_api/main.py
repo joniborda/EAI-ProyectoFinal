@@ -16,7 +16,7 @@ from eda.train import (
     _prepare_target_series,
 )
 from eda.training_dag import run_training_dag
-from eda.winner_predict import predict_winner
+from eda.winner_predict import _fill_daily_commercial_from_features_df, predict_winner
 
 
 DEFAULT_WINDOWS_PATH = Path(os.getenv("WINDOWS_PATH", "/app/reports/eda/features/windows.npz"))
@@ -244,6 +244,9 @@ def predict_baseline(
                 },
             }
         )
+
+    df_feat = pd.read_json(Path(series_path), lines=True, dtype=False)
+    _fill_daily_commercial_from_features_df(daily, df_feat, only_missing_keys=True)
 
     return {
         "target_col": target_col,

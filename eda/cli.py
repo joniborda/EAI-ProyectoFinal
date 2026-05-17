@@ -1,6 +1,7 @@
 from __future__ import annotations
 import typer
 
+from eda.metric_plots import _DIST_HIST_BINS
 from eda.cli_handlers import (
 	handle_analyze,
 	handle_build_datasets,
@@ -139,7 +140,7 @@ def plot_mape_distribution(
 		help="mape | rmse | squared_error | abs_error (rmse/squared_error/abs_error usan y_true,y_pred del JSONL)",
 	),
 	model_col: str | None = typer.Option("model", help="Columna con nombre de modelo; usar vacío si no aplica"),
-	bins: int = typer.Option(10, help="Cantidad de bins del histograma"),
+	bins: int = typer.Option(_DIST_HIST_BINS, help="Cantidad de bins del histograma"),
 	no_show: bool = typer.Option(False, help="Guardar sin abrir ventana"),
 ) -> None:
 	"""Histograma + KDE de MAPE, o de (y-ŷ)² / |y-ŷ| para ver errores alineados con RMSE / escala del target."""

@@ -8,9 +8,23 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import FixedLocator, FuncFormatter, MaxNLocator
 from PIL import Image, ImageDraw, ImageFont
 from scipy.stats import gaussian_kde
+
+# Escalas compartidas entre modelos (distribución de error al cuadrado).
+_SQUARED_ERROR_X_MAX = 9.6e6
+_SQUARED_ERROR_Y_MAX = 250.0
+# Eje Y: [0, 1] lineal (poca altura visual) y (1, Y_MAX] logarítmico.
+_SQUARED_ERROR_Y_LINEAR_TOP = 1.0
+_DIST_Y_LINEAR_FRAC = 0.05
+_DIST_TICK_LABELSIZE = 20
+_DIST_AXIS_LABEL_FONTSIZE = 20
+_DIST_X_TICK_COUNT = 6
+_DIST_Y_TICK_COUNT = 6
+_DIST_HIST_BINS = 60
+# Margen en el borde del eje para que no se recorten las etiquetas del último tick.
+_DIST_AXIS_PAD_FRAC = 0.05
 
 
 def _ensure_dir(path: Path) -> None:
@@ -119,6 +133,24 @@ def _derived_error_series(
     return values
 
 
+def _distribution_xlabel(mode: str, *, for_matplotlib: bool) -> str:
+    """
+    Etiqueta del eje X según métrica.
+
+    Matplotlib: mathtext (\\hat{y}, sqrt, etc.) para evitar tofu con DejaVu por defecto.
+    Pillow: Unicode con fuente TrueType del sistema.
+    """
+    if mode == "abs_error":
+        if for_matplotlib:
+            return r"$|y - \hat{y}|$ (units of target)"
+        return "|y - ŷ| (units of target)"
+    if mode == "squared_error":
+        if for_matplotlib:
+            return r"$(y - \hat{y})^2\ (\sqrt{\mathrm{mean}} = \mathrm{RMSE})$"
+        return "(y - ŷ)² (√mean = RMSE)"
+    return "Mean Absolute Percentage Error (%)"
+
+
 def _format_freq_tick(value: float, _pos: int | None) -> str:
     """Etiquetas compactas para conteos / densidad en el eje Y."""
     v = float(value)
@@ -136,21 +168,131 @@ def _format_freq_tick(value: float, _pos: int | None) -> str:
     return f"{v:.3g}"
 
 
-def _apply_distribution_axes(ax: Any) -> None:
-    """Evita demasiadas marcas en Y (p. ej. histogramas muy sesgados)."""
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=14, integer=False, prune=None))
+def _distribution_hist_range(
+    values: np.ndarray,
+    mode: str,
+) -> tuple[float, float] | None:
+    if mode == "squared_error":
+        return (0.0, _SQUARED_ERROR_X_MAX)
+    if np.isclose(values.min(), values.max()):
+        center = float(values[0])
+        margin = max(1.0, abs(center) * 0.1)
+        return (center - margin, center + margin)
+    return None
+
+
+def _dist_y_transform(y: np.ndarray | float, y_top: float) -> np.ndarray:
+    """Normaliza frecuencia Y a [0, 1] con tramo lineal corto en [0, LINEAR_TOP]."""
+    arr = np.atleast_1d(np.asarray(y, dtype=float))
+    arr = np.clip(arr, 0.0, float(y_top))
+    out = np.empty_like(arr)
+    linear = arr <= _SQUARED_ERROR_Y_LINEAR_TOP
+    out[linear] = _DIST_Y_LINEAR_FRAC * (arr[linear] / _SQUARED_ERROR_Y_LINEAR_TOP)
+    above = ~linear
+    if np.any(above):
+        log_denom = np.log(y_top / _SQUARED_ERROR_Y_LINEAR_TOP)
+        if log_denom > 0:
+            out[above] = _DIST_Y_LINEAR_FRAC + (1.0 - _DIST_Y_LINEAR_FRAC) * (
+                np.log(arr[above] / _SQUARED_ERROR_Y_LINEAR_TOP) / log_denom
+            )
+        else:
+            out[above] = _DIST_Y_LINEAR_FRAC
+    return out
+
+
+def _dist_y_inverse(t: np.ndarray | float, y_top: float) -> np.ndarray:
+    """Inversa de ``_dist_y_transform`` (para escala function de matplotlib)."""
+    arr = np.atleast_1d(np.asarray(t, dtype=float))
+    arr = np.clip(arr, 0.0, 1.0)
+    out = np.empty_like(arr)
+    linear = arr <= _DIST_Y_LINEAR_FRAC
+    if _DIST_Y_LINEAR_FRAC > 0:
+        out[linear] = _SQUARED_ERROR_Y_LINEAR_TOP * (arr[linear] / _DIST_Y_LINEAR_FRAC)
+    above = ~linear
+    if np.any(above) and y_top > _SQUARED_ERROR_Y_LINEAR_TOP:
+        log_frac = (arr[above] - _DIST_Y_LINEAR_FRAC) / (1.0 - _DIST_Y_LINEAR_FRAC)
+        out[above] = _SQUARED_ERROR_Y_LINEAR_TOP * np.exp(
+            log_frac * np.log(y_top / _SQUARED_ERROR_Y_LINEAR_TOP)
+        )
+    return out
+
+
+def _dist_y_ratio(y_val: float, y_top: float) -> float:
+    return float(_dist_y_transform(y_val, y_top))
+
+
+def _dist_y_forward_mpl(y: np.ndarray) -> np.ndarray:
+    return _dist_y_transform(y, _SQUARED_ERROR_Y_MAX)
+
+
+def _dist_y_inverse_mpl(t: np.ndarray) -> np.ndarray:
+    return _dist_y_inverse(t, _SQUARED_ERROR_Y_MAX)
+
+
+def _fixed_dist_y_ticks(y_top: float) -> np.ndarray:
+    n = _DIST_Y_TICK_COUNT
+    if n <= 1:
+        return np.array([0.0])
+    log_ticks = np.logspace(0.0, np.log10(float(y_top)), n - 1)
+    return np.concatenate([[0.0], log_ticks])
+
+
+def _format_dist_x_tick(value: float, _pos: int | None) -> str:
+    v = float(value)
+    if v == 0:
+        return "0"
+    av = abs(v)
+    if av >= 1e4 or av < 0.01:
+        return f"{v:.2e}"
+    return f"{v:.4g}"
+
+
+def _apply_distribution_axes(
+    ax: Any,
+    *,
+    x_range: tuple[float, float] | None = None,
+    y_top: float | None = None,
+) -> None:
+    if x_range is not None:
+        x_ticks = np.linspace(x_range[0], x_range[1], _DIST_X_TICK_COUNT)
+        ax.xaxis.set_major_locator(FixedLocator(x_ticks))
+    else:
+        ax.xaxis.set_major_locator(
+            MaxNLocator(nbins=_DIST_X_TICK_COUNT, integer=False, prune=None)
+        )
+
+    if y_top is not None:
+        y_ticks = _fixed_dist_y_ticks(float(y_top))
+        ax.yaxis.set_major_locator(FixedLocator(y_ticks))
+    else:
+        ax.yaxis.set_major_locator(
+            MaxNLocator(nbins=_DIST_Y_TICK_COUNT, integer=False, prune=None)
+        )
+
     ax.yaxis.set_major_formatter(FuncFormatter(_format_freq_tick))
-    ax.tick_params(axis="y", labelsize=10)
-    ax.tick_params(axis="x", labelsize=9)
+    ax.xaxis.set_major_formatter(FuncFormatter(_format_dist_x_tick))
+    ax.tick_params(axis="y", labelsize=_DIST_TICK_LABELSIZE)
+    ax.tick_params(axis="x", labelsize=_DIST_TICK_LABELSIZE)
 
 
-def _plot_kde(ax: Any, values: np.ndarray) -> None:
+def _plot_kde(
+    ax: Any,
+    values: np.ndarray,
+    *,
+    x_range: tuple[float, float] | None = None,
+    bins: int = _DIST_HIST_BINS,
+) -> None:
     if len(values) < 2 or np.isclose(values.std(), 0):
         return
 
-    x_grid = np.linspace(values.min(), values.max(), 200)
+    if x_range is not None:
+        x_min, x_max = x_range
+    else:
+        x_min, x_max = float(values.min()), float(values.max())
+    x_grid = np.linspace(x_min, x_max, 200)
     kde = gaussian_kde(values)
-    bin_width = (values.max() - values.min()) / max(1, min(10, len(values)))
+    span = x_max - x_min
+    bin_width = span / max(1, bins) if span > 0 else 1.0
     y_grid = kde(x_grid) * len(values) * bin_width
     ax.plot(x_grid, y_grid, color="#2f76bd", linewidth=2)
 
@@ -233,36 +375,47 @@ def _plot_mape_distribution_with_pillow(
     *,
     title: str,
     x_axis_label: str,
+    y_top: float | None = None,
+    x_range: tuple[float, float] | None = None,
+    y_dist_scale: bool = False,
 ) -> None:
     width, height = 920, 600
-    left, right, top, bottom = 108, 35, 65, 85
+    left, right, top, bottom = 108, 58, 65, 85
     plot_w = width - left - right
     plot_h = height - top - bottom
 
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
 
-    if np.isclose(values.min(), values.max()):
-        center = float(values[0])
-        margin = max(1.0, abs(center) * 0.1)
-        hist_range = (center - margin, center + margin)
-    else:
-        hist_range = None
+    hist_range = x_range
+    if hist_range is None:
+        hist_range = _distribution_hist_range(values, "column")
 
     counts, edges = np.histogram(values, bins=bins, range=hist_range)
-    max_count = max(1, int(counts.max()))
 
     kde_peak = 0.0
     y_grid: np.ndarray | None = None
     x_grid_kde: np.ndarray | None = None
     if len(values) >= 2 and not np.isclose(values.std(), 0):
-        x_grid_kde = np.linspace(edges[0], edges[-1], 200)
+        x_lo, x_hi = float(edges[0]), float(edges[-1])
+        x_grid_kde = np.linspace(x_lo, x_hi, 200)
         kde = gaussian_kde(values)
-        bin_width = edges[1] - edges[0]
+        bin_width = (edges[1] - edges[0]) if len(edges) > 1 else (x_hi - x_lo) / max(1, bins)
         y_grid = kde(x_grid_kde) * len(values) * bin_width
         kde_peak = float(y_grid.max())
 
-    y_top = max(float(max_count), kde_peak, 1.0)
+    local_y_top = max(float(max(1, int(counts.max()))), kde_peak, 1.0)
+    y_top_plot = float(y_top) if y_top is not None else local_y_top
+
+    def _y_to_height(y_val: float) -> int:
+        if y_top_plot <= 0:
+            return 0
+        if y_dist_scale:
+            ratio = _dist_y_ratio(y_val, y_top_plot)
+        else:
+            y_val = max(0.0, float(y_val))
+            ratio = min(y_val, y_top_plot) / y_top_plot
+        return int(ratio * plot_h)
 
     draw.line((left, top, left, top + plot_h), fill="black", width=2)
     draw.line((left, top + plot_h, left + plot_w, top + plot_h), fill="black", width=2)
@@ -272,7 +425,7 @@ def _plot_mape_distribution_with_pillow(
         x0 = left + int(idx * plot_w / len(counts)) + bar_gap
         x1 = left + int((idx + 1) * plot_w / len(counts)) - bar_gap
         y1 = top + plot_h
-        y0 = y1 - int((count / y_top) * plot_h)
+        y0 = y1 - _y_to_height(float(count))
         draw.rectangle((x0, y0, x1, y1), fill="#8fb1d1", outline="black")
 
     if y_grid is not None and x_grid_kde is not None and len(edges) > 1:
@@ -280,36 +433,65 @@ def _plot_mape_distribution_with_pillow(
         points = [
             (
                 left + int(((x - edges[0]) / span_x) * plot_w),
-                top + plot_h - int((float(y) / y_top) * plot_h),
+                top + plot_h - _y_to_height(float(y)),
             )
             for x, y in zip(x_grid_kde, y_grid)
         ]
         if len(points) > 1:
             draw.line(points, fill="#2f76bd", width=3)
 
-    y_tick_vals = np.linspace(0.0, y_top, num=6)
-    label_left = max(6, left - 88)
-    for tv in y_tick_vals:
-        ypix = top + plot_h - int((tv / y_top) * plot_h)
+    y_tick_vals = (
+        _fixed_dist_y_ticks(y_top_plot)
+        if y_dist_scale
+        else np.linspace(0.0, y_top_plot, num=_DIST_Y_TICK_COUNT)
+    )
+    font_tick = _pillow_font(_DIST_TICK_LABELSIZE, unicode_glyphs=True)
+    label_left = max(6, left - 98)
+    for tidx, tv in enumerate(y_tick_vals):
+        ypix = top + plot_h - _y_to_height(float(tv))
         draw.line((left - 5, ypix, left, ypix), fill="black")
         lbl = _format_freq_tick(float(tv), None)
-        _draw_text(draw, (label_left, ypix - 6), lbl)
+        ty = ypix - 8
+        if tidx == len(y_tick_vals) - 1:
+            ty = min(ty, top + 4)
+        _draw_text(draw, (label_left, ty), lbl, font=font_tick)
 
     x_min, x_max = float(edges[0]), float(edges[-1])
-    span = x_max - x_min
-    fmt = ".4g" if span > 0 and span < 0.01 else ".3g" if span < 10 else ".2g"
-    for idx in range(5):
-        ratio = idx / 4
-        x = left + int(ratio * plot_w)
+    x_tick_count = _DIST_X_TICK_COUNT
+    for idx in range(x_tick_count):
+        ratio = idx / (x_tick_count - 1) if x_tick_count > 1 else 0.0
+        xpix = left + int(ratio * plot_w)
         value = x_min + ratio * (x_max - x_min)
-        draw.line((x, top + plot_h, x, top + plot_h + 5), fill="black")
-        _draw_text(draw, (x - 28, top + plot_h + 10), f"{value:{fmt}}")
+        draw.line((xpix, top + plot_h, xpix, top + plot_h + 5), fill="black")
+        lbl = _format_dist_x_tick(value, None)
+        tick_bbox = draw.textbbox((0, 0), lbl, font=font_tick)
+        tick_w = tick_bbox[2] - tick_bbox[0]
+        tx = xpix - tick_w // 2
+        if idx == 0:
+            tx = max(left, tx)
+        elif idx == x_tick_count - 1:
+            tx = min(left + plot_w - tick_w, tx)
+        _draw_text(draw, (tx, top + plot_h + 10), lbl, font=font_tick)
 
-    tw = len(title) * 6 // 2
-    _draw_text(draw, (max(10, width // 2 - tw), 25), title)
-    xw = len(x_axis_label) * 6 // 2
-    _draw_text(draw, (max(10, width // 2 - xw), height - 35), x_axis_label)
-    _draw_text(draw, (15, height // 2 - 10), "Frequency")
+    font_title = _pillow_font(_DIST_TICK_LABELSIZE, unicode_glyphs=True)
+    font_x = _pillow_font(_DIST_AXIS_LABEL_FONTSIZE, unicode_glyphs=True)
+    font_y = _pillow_font(_DIST_AXIS_LABEL_FONTSIZE, unicode_glyphs=True)
+
+    title_bbox = draw.textbbox((0, 0), title, font=font_title)
+    _draw_text(
+        draw,
+        (max(10, width // 2 - (title_bbox[2] - title_bbox[0]) // 2), 25),
+        title,
+        font=font_title,
+    )
+    x_bbox = draw.textbbox((0, 0), x_axis_label, font=font_x)
+    _draw_text(
+        draw,
+        (max(10, width // 2 - (x_bbox[2] - x_bbox[0]) // 2), height - 35),
+        x_axis_label,
+        font=font_x,
+    )
+    _draw_text(draw, (15, height // 2 - 10), "Frequency", font=font_y)
 
     image.save(output_file)
     if show:
@@ -322,7 +504,7 @@ def plot_mape_distribution(
     model_name: str | None = "random_forest",
     metric_col: str = "mape",
     model_col: str | None = "model",
-    bins: int = 10,
+    bins: int = _DIST_HIST_BINS,
     show: bool = True,
 ) -> Path:
     """
@@ -349,11 +531,9 @@ def plot_mape_distribution(
     if mode == "abs_error":
         values = _derived_error_series(df, "abs_error", model_name, model_col)
         dist_title = f"{label} - Test Absolute Error Distribution"
-        xlabel = "|y - ŷ| (units of target)"
     elif mode == "squared_error":
         values = _derived_error_series(df, "squared_error", model_name, model_col)
         dist_title = f"{label} - Test Squared Error Distribution"
-        xlabel = "(y - ŷ)²  (√mean = RMSE)"
     else:
         values = _metric_values(
             df=df,
@@ -362,27 +542,43 @@ def plot_mape_distribution(
             model_col=model_col,
         )
         dist_title = f"{label} - Test MAPE Distribution"
-        xlabel = "Mean Absolute Percentage Error (%)"
+
+    xlabel = _distribution_xlabel(mode, for_matplotlib=True)
+    xlabel_pillow = _distribution_xlabel(mode, for_matplotlib=False)
 
     values_np = values.to_numpy(dtype=float)
+    use_shared_scales = mode == "squared_error"
+    hist_range = _distribution_hist_range(values_np, mode) if use_shared_scales else None
+    shared_y_top = _SQUARED_ERROR_Y_MAX if use_shared_scales else None
 
     fig, ax = plt.subplots(figsize=(9, 6))
     ax.hist(
         values_np,
         bins=bins,
+        range=hist_range,
         color="#8fb1d1",
         edgecolor="black",
         alpha=0.85,
     )
-    _plot_kde(ax, values_np)
+    _plot_kde(ax, values_np, x_range=hist_range, bins=bins)
     ax.set_title(dist_title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("Frequency", labelpad=14)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=14, integer=False, prune=None))
-    _apply_distribution_axes(ax)
-    fig.subplots_adjust(left=0.2, right=0.97, bottom=0.14, top=0.9)
+    ax.set_xlabel(xlabel, fontsize=_DIST_AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel("Frequency", labelpad=14, fontsize=_DIST_AXIS_LABEL_FONTSIZE)
+    if hist_range is not None:
+        x_lo, x_hi = hist_range
+        x_pad = (x_hi - x_lo) * _DIST_AXIS_PAD_FRAC
+        ax.set_xlim(x_lo, x_hi + x_pad)
+    if shared_y_top is not None:
+        ax.set_yscale("function", functions=(_dist_y_forward_mpl, _dist_y_inverse_mpl))
+        y_pad = shared_y_top * _DIST_AXIS_PAD_FRAC
+        ax.set_ylim(bottom=0.0, top=shared_y_top + y_pad)
+    _apply_distribution_axes(ax, x_range=hist_range, y_top=shared_y_top)
+    bottom = 0.18 if mode in ("squared_error", "abs_error") else 0.14
+    right_margin = 0.93 if use_shared_scales else 0.97
+    top_margin = 0.88 if use_shared_scales else 0.9
+    fig.subplots_adjust(left=0.2, right=right_margin, bottom=bottom, top=top_margin)
     try:
-        fig.savefig(output_file, dpi=150)
+        fig.savefig(output_file, dpi=150, bbox_inches="tight", pad_inches=0.08)
         if show:
             plt.show()
     except RecursionError:
@@ -393,7 +589,10 @@ def plot_mape_distribution(
             bins=bins,
             show=show,
             title=dist_title,
-            x_axis_label=xlabel,
+            x_axis_label=xlabel_pillow,
+            y_top=shared_y_top,
+            x_range=hist_range,
+            y_dist_scale=shared_y_top is not None,
         )
     else:
         if not show:

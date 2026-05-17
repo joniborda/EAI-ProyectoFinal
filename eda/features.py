@@ -140,7 +140,7 @@ def build_features(
     imputation_strategy: str = "median",
 ) -> dict[str, Path]:
     """
-    Construye features con lags y revenue_growth, y genera ventanas deslizantes.
+    Construye features con lags, revenue_growth, investment_growth y ventanas deslizantes.
     Retorna rutas de salida generadas.
     """
     in_path = Path(input_path)
@@ -171,6 +171,9 @@ def build_features(
 
     if "totalRevenue" in df.columns:
         df["revenue_growth"] = df["totalRevenue"].pct_change()
+
+    if "adSpend" in df.columns:
+        df["investment_growth"] = df["adSpend"].pct_change()
 
     if "event_start" in df.columns:
         df["event_start"] = pd.to_numeric(df["event_start"], errors="coerce").fillna(0).astype(int)

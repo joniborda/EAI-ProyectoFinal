@@ -169,7 +169,7 @@ print(evaluate("12345", model="sarimax", test_horizon=14))
 
 ### Notas
 - La serie se agrega por día y se rellenan días sin ventas con 0.
-- Features adicionales: lags de `adSpend` y `orders`, `revenue_growth` (pct_change de `totalRevenue`) y señales de inicio de eventos (`event_start`, `event_start_next_1`) usando solo `events.startDate`.
+- Features adicionales: lags de `adSpend` y `orders`, `revenue_growth` (pct_change de `totalRevenue`), `investment_growth` (pct_change de `adSpend`) y señales de inicio de eventos (`event_start`, `event_start_next_1`) usando solo `events.startDate`.
 - La ventana deslizante genera `reports/eda/features/windows.npz` con `X`, `y` y `feature_columns`.
 - `compare-models` entrena Linear/Ridge/RandomForest, XGBoost, CatBoost y NeuralProphet (si está disponible).
 - Archivos de modelo usan IDs saneados (sin `/`, espacios → `_`).
@@ -212,28 +212,28 @@ python -m eda.cli plot-mape-distribution \
   --input-path reports/eda/models/mape_distribution.jsonl \
   --model-name random_forest \
   --metric-col rmse \
-  --output-path reports/eda/plots/mape_distribution_random_forest.png \
+  --output-path reports/eda/plots/rmse_distribution_random_forest.png \
   --no-show
 
 python -m eda.cli plot-mape-distribution \
   --input-path reports/eda/models/mape_distribution.jsonl \
   --model-name baseline_tm7_sw8_blend \
   --metric-col rmse \
-  --output-path reports/eda/plots/mape_distribution_baseline_tm7_sw8_blend.png \
+  --output-path reports/eda/plots/rmse_distribution_baseline_tm7_sw8_blend.png \
   --no-show
 
 python -m eda.cli plot-mape-distribution \
   --input-path reports/eda/models/mape_distribution.jsonl \
   --model-name temporal_fusion_transformer \
   --metric-col rmse \
-  --output-path reports/eda/plots/mape_distribution_temporal_fusion_transformer.png \
+  --output-path reports/eda/plots/rmse_distribution_temporal_fusion_transformer.png \
   --no-show
   
 python -m eda.cli plot-mape-distribution \
   --input-path reports/eda/models/mape_distribution.jsonl \
   --model-name catboost \
   --metric-col rmse \
-  --output-path reports/eda/plots/mape_distribution_catboost.png \
+  --output-path reports/eda/plots/rmse_distribution_catboost.png \
   --no-show
 
 # Misma fuente de datos: error al cuadrado por observación (relacionado con RMSE)

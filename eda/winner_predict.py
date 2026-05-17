@@ -49,6 +49,80 @@ def _read_features_df(series_path: Path, target_col: str) -> pd.DataFrame:
     return df
 
 
+_COMMERCIAL_COLS = ("adSpend", "rcRevenue", "totalRevenue")
+
+
+def _commercial_fields_from_row(row: pd.Series) -> dict[str, Any | None]:
+    """Valores comerciales de una fila del panel (para respuesta de /predict)."""
+    out: dict[str, Any | None] = {}
+    for col in _COMMERCIAL_COLS:
+        if col not in row.index:
+            out[col] = None
+            continue
+        v = row[col]
+        out[col] = None if pd.isna(v) else round(float(v), 2)
+    return out
+
+
+def _fill_daily_commercial_from_features_df(
+    daily: list[dict[str, Any]],
+    df: pd.DataFrame,
+    *,
+    only_missing_keys: bool = False,
+) -> None:
+    """
+    Completa adSpend, rcRevenue, totalRevenue desde el dataset de features por fecha.
+    Si la fecha es posterior al último día observado, repite los valores del último día
+    (misma lógica de “carry forward” que al armar filas futuras en modelos de ventana).
+    Si only_missing_keys=True, no pisa claves cuyo valor ya es distinto de null.
+    """
+    if not daily:
+        return
+    have_cols = [c for c in _COMMERCIAL_COLS if c in df.columns]
+    if not have_cols or "created" not in df.columns:
+        for item in daily:
+            for c in _COMMERCIAL_COLS:
+                if only_missing_keys and item.get(c) is not None:
+                    continue
+                item[c] = None
+        return
+
+    work = df[["created"] + have_cols].copy()
+    work["created"] = pd.to_datetime(work["created"], errors="coerce").dt.normalize()
+    work = work.dropna(subset=["created"])
+    work["_d"] = work["created"].dt.date
+    by_date = work.drop_duplicates(subset=["_d"], keep="last").set_index("_d")
+
+    last_hist_d: date | None = None
+    last_commercial: dict[str, Any] = {}
+    if not by_date.empty:
+        last_hist_d = by_date.index.max()
+        tail = by_date.loc[last_hist_d]
+        if isinstance(tail, pd.DataFrame):
+            tail = tail.iloc[-1]
+        for col in have_cols:
+            last_commercial[col] = tail[col]
+
+    for item in daily:
+        d = date.fromisoformat(item["date"])
+        for c in _COMMERCIAL_COLS:
+            if only_missing_keys and item.get(c) is not None:
+                continue
+            if c not in have_cols:
+                item[c] = None
+                continue
+            if d in by_date.index:
+                v = by_date.loc[d, c]
+                if isinstance(v, pd.Series):
+                    v = v.iloc[-1]
+                item[c] = None if pd.isna(v) else round(float(v), 2)
+            elif last_hist_d is not None and d > last_hist_d:
+                v = last_commercial.get(c)
+                item[c] = None if v is None or pd.isna(v) else round(float(v), 2)
+            else:
+                item[c] = None
+
+
 def _predict_baseline(
     model: TrailingMeanWeekdayMedianBaseline,
     series: pd.Series,
@@ -107,7 +181,11 @@ def _append_future_row_recursive(
     for col in feature_columns:
         if col == target_col:
             continue
-        if col.startswith("orders_lag_") or col.startswith("adSpend_lag_") or col == "revenue_growth":
+        if (
+            col.startswith("orders_lag_")
+            or col.startswith("adSpend_lag_")
+            or col in ("revenue_growth", "investment_growth")
+        ):
             continue
         if col not in new_row.index:
             new_row[col] = last.get(col, 0.0)
@@ -130,6 +208,11 @@ def _append_future_row_recursive(
         cur = extended["totalRevenue"].iloc[-1]
         if pd.notna(prev) and prev != 0 and pd.notna(cur):
             extended.loc[idx, "revenue_growth"] = float((cur - prev) / prev)
+    if "investment_growth" in feature_columns and "adSpend" in extended.columns:
+        prev = extended["adSpend"].shift(1).iloc[-1]
+        cur = extended["adSpend"].iloc[-1]
+        if pd.notna(prev) and prev != 0 and pd.notna(cur):
+            extended.loc[idx, "investment_growth"] = float((cur - prev) / prev)
     if future_events is not None:
         ev_today = float(future_events.get(target_day, 0.0))
         ev_today_b = 1.0 if ev_today >= 0.5 else 0.0
@@ -173,8 +256,11 @@ def _predict_window_sklearn(
         if np.isnan(x_flat).any():
             x_flat = np.nan_to_num(x_flat, nan=0.0)
         pred = model.predict(x_flat)[0]
-        daily.append({"date": target_d.isoformat(), "prediction": round(float(pred), 2)})
         extended.loc[extended.index[-1], target_col] = float(pred)
+        row = extended.iloc[-1]
+        day_out = {"date": target_d.isoformat(), "prediction": round(float(pred), 2)}
+        day_out.update(_commercial_fields_from_row(row))
+        daily.append(day_out)
     return daily
 
 
@@ -208,8 +294,11 @@ def _predict_xgboost(
         wdf = extended[feature_columns].tail(window_size)
         x_flat = np.nan_to_num(wdf.to_numpy(dtype=np.float64).reshape(1, -1), nan=0.0)
         pred = booster.predict(x_flat)[0]
-        daily.append({"date": target_d.isoformat(), "prediction": round(float(pred), 2)})
         extended.loc[extended.index[-1], target_col] = float(pred)
+        row = extended.iloc[-1]
+        day_out = {"date": target_d.isoformat(), "prediction": round(float(pred), 2)}
+        day_out.update(_commercial_fields_from_row(row))
+        daily.append(day_out)
     return daily
 
 
@@ -281,8 +370,11 @@ def _predict_lstm(
         with torch.no_grad():
             pred_scaled = net(torch.tensor(w_scaled, dtype=torch.float32).to(device)).cpu().numpy().reshape(-1)[0]
         pred = float(pred_scaled * y_std + y_mean)
-        daily.append({"date": target_d.isoformat(), "prediction": round(pred, 2)})
         extended.loc[extended.index[-1], target_col] = pred
+        row = extended.iloc[-1]
+        day_out = {"date": target_d.isoformat(), "prediction": round(pred, 2)}
+        day_out.update(_commercial_fields_from_row(row))
+        daily.append(day_out)
     return daily
 
 
@@ -572,6 +664,8 @@ def predict_winner(
 
     else:
         raise ValueError(f"Modelo ganador no soportado para inferencia: {model_name}")
+
+    _fill_daily_commercial_from_features_df(daily, df, only_missing_keys=True)
 
     result: dict[str, Any] = {
         "model_name": model_name,

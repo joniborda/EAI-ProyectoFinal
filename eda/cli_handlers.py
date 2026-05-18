@@ -220,6 +220,21 @@ def handle_plot_mape_distribution(
 		raise typer.Exit(code=1)
 
 
+def _echo_plot_orders_events_info(info: dict[str, object]) -> None:
+	typer.secho(f"Órdenes: {info['orders_source']}", fg=typer.colors.GREEN)
+	typer.secho(f"Eventos: {info['events_source']}", fg=typer.colors.GREEN)
+	metric = info.get("metric", "orders")
+	typer.secho(
+		f"Métrica: {metric} | Eje X cada {info['group_months']} mes(es) | "
+		f"puntos (días): {info['n_points_plotted']} "
+		f"(excl. ultimo dia incompleto: {info['n_days_before_trim']} -> {info['n_days_raw']}) | "
+		f"eventos (total / en rango): {info['n_events_total']} / {info['n_events_in_range']}",
+		fg=typer.colors.GREEN,
+	)
+	if info.get("output_path"):
+		typer.secho(f"Guardado: {info['output_path']}", fg=typer.colors.GREEN)
+
+
 def handle_plot_orders_events(
 	orders_path: str | None,
 	events_path: str | None,
@@ -240,17 +255,59 @@ def handle_plot_orders_events(
 			show=show,
 			group_months=gm,
 		)
-		typer.secho(f"Órdenes: {info['orders_source']}", fg=typer.colors.GREEN)
-		typer.secho(f"Eventos: {info['events_source']}", fg=typer.colors.GREEN)
-		typer.secho(
-			f"Eje X cada {info['group_months']} mes(es) | "
-			f"puntos (días): {info['n_points_plotted']} "
-			f"(excl. ultimo dia incompleto: {info['n_days_before_trim']} -> {info['n_days_raw']}) | "
-			f"eventos (total / en rango): {info['n_events_total']} / {info['n_events_in_range']}",
-			fg=typer.colors.GREEN,
+		_echo_plot_orders_events_info(info)
+	except Exception as e:
+		typer.secho(f"Error generando gráfico: {e}", fg=typer.colors.RED)
+		raise typer.Exit(code=1)
+
+
+def handle_plot_orders_pct_change(
+	orders_path: str | None,
+	events_path: str | None,
+	from_db: bool,
+	output_path: str | None,
+	show: bool,
+	group_months: int = 3,
+) -> None:
+	try:
+		from eda.plot_orders_events import run_plot_orders_pct_variation_events
+
+		gm = group_months if group_months >= 1 else 1
+		info = run_plot_orders_pct_variation_events(
+			orders_path=orders_path,
+			events_path=events_path,
+			use_db=from_db,
+			output_path=output_path,
+			show=show,
+			group_months=gm,
 		)
-		if info.get("output_path"):
-			typer.secho(f"Guardado: {info['output_path']}", fg=typer.colors.GREEN)
+		_echo_plot_orders_events_info(info)
+	except Exception as e:
+		typer.secho(f"Error generando gráfico: {e}", fg=typer.colors.RED)
+		raise typer.Exit(code=1)
+
+
+def handle_plot_orders_lag7_pct_change(
+	features_path: str | None,
+	events_path: str | None,
+	from_db: bool,
+	output_path: str | None,
+	show: bool,
+	group_months: int = 3,
+) -> None:
+	try:
+		from eda.plot_orders_events import run_plot_orders_lag7_pct_variation_events
+
+		gm = group_months if group_months >= 1 else 1
+		info = run_plot_orders_lag7_pct_variation_events(
+			features_path=features_path,
+			events_path=events_path,
+			use_db=from_db,
+			output_path=output_path,
+			show=show,
+			group_months=gm,
+		)
+		_echo_plot_orders_events_info(info)
 	except Exception as e:
 		typer.secho(f"Error generando gráfico: {e}", fg=typer.colors.RED)
 		raise typer.Exit(code=1)

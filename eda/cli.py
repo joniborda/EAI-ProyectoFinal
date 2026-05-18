@@ -10,6 +10,8 @@ from eda.cli_handlers import (
 	handle_grid_search,
 	handle_plot_mape_distribution,
 	handle_plot_orders_events,
+	handle_plot_orders_pct_change,
+	handle_plot_orders_lag7_pct_change,
 	handle_plot_true_vs_predictions,
 	handle_test_db,
 	handle_training_dag,
@@ -179,6 +181,70 @@ def plot_orders_events(
 	"""Órdenes por día (línea diaria); eje X con marcas cada N meses; líneas verticales en eventos."""
 	handle_plot_orders_events(
 		orders_path=orders_path,
+		events_path=events_path,
+		from_db=from_db,
+		output_path=output_path,
+		show=not no_show,
+		group_months=group_months,
+	)
+
+
+@app.command("plot-orders-pct-change")
+def plot_orders_pct_change(
+	orders_path: str | None = typer.Option(
+		None,
+		help="orders.jsonl; por defecto reports/eda/data/orders.jsonl si existe, si no BD",
+	),
+	events_path: str | None = typer.Option(
+		None,
+		help="events.jsonl; por defecto reports/eda/data/events.jsonl si existe, si no BD",
+	),
+	from_db: bool = typer.Option(False, help="Forzar lectura de órdenes y eventos desde la BD"),
+	output_path: str | None = typer.Option(
+		None,
+		help="Guardar PNG (ej. reports/eda/plots/orders_pct_change_with_events.png)",
+	),
+	no_show: bool = typer.Option(False, help="Guardar sin abrir ventana"),
+	group_months: int = typer.Option(
+		3,
+		help="Marcas del eje X cada N meses (serie siempre diaria, sin sumar). 1 = cada mes",
+	),
+) -> None:
+	"""Variación %% día a día de órdenes; mismas marcas de eventos que plot-orders-events."""
+	handle_plot_orders_pct_change(
+		orders_path=orders_path,
+		events_path=events_path,
+		from_db=from_db,
+		output_path=output_path,
+		show=not no_show,
+		group_months=group_months,
+	)
+
+
+@app.command("plot-orders-lag7-pct-change")
+def plot_orders_lag7_pct_change(
+	features_path: str | None = typer.Option(
+		None,
+		help="features.jsonl con orders_lag_7 (default: reports/eda/features/features.jsonl)",
+	),
+	events_path: str | None = typer.Option(
+		None,
+		help="events.jsonl; por defecto reports/eda/data/events.jsonl si existe, si no BD",
+	),
+	from_db: bool = typer.Option(False, help="Forzar lectura de eventos desde la BD"),
+	output_path: str | None = typer.Option(
+		None,
+		help="Guardar PNG (ej. reports/eda/plots/orders_lag7_pct_change_with_events.png)",
+	),
+	no_show: bool = typer.Option(False, help="Guardar sin abrir ventana"),
+	group_months: int = typer.Option(
+		3,
+		help="Marcas del eje X cada N meses (serie diaria). 1 = cada mes",
+	),
+) -> None:
+	"""Variación %% diaria de órdenes suavizada con media móvil centrada de 7 días (features)."""
+	handle_plot_orders_lag7_pct_change(
+		features_path=features_path,
 		events_path=events_path,
 		from_db=from_db,
 		output_path=output_path,

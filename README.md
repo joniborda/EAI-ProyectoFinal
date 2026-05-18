@@ -312,10 +312,25 @@ python -m eda.cli plot-predictions neuralprophet \
   --no-show
 
 
-# Serie diaria (sin sumar); --group-months solo espacia las marcas del eje X (p. ej. cada 3 meses)
+# Serie diaria de órdenes (sin sumar); --group-months solo espacia las marcas del eje X (p. ej. cada 3 meses)
 python -m eda.cli plot-orders-events --group-months 3 --no-show --output-path reports/eda/plots/orders_with_events.png
-
-
 
 python -m eda.cli plot-orders-events --no-show --output-path reports/eda/plots/orders_with_events.png
 python -m eda.cli plot-orders-events --from-db --no-show --output-path reports/eda/plots/orders_with_events.png
+
+# Variación % día a día de órdenes: (hoy − ayer) / ayer × 100 (on the fly).
+# Eje Y acotado a ±100 % por defecto (eda/plot_orders_events.py → _ORDERS_PCT_Y_DISPLAY_CAP) para ver el día a día sin picos extremos.
+python -m eda.cli plot-orders-pct-change --group-months 3 --no-show \
+  --output-path reports/eda/plots/orders_pct_change_with_events.png
+
+python -m eda.cli plot-orders-pct-change --no-show \
+  --output-path reports/eda/plots/orders_pct_change_with_events.png
+
+# Variación % diaria de orders (features.jsonl) + media móvil centrada 7d (rolling) para suavizar
+python -m eda.cli plot-orders-lag7-pct-change --group-months 3 --no-show \
+  --output-path reports/eda/plots/orders_lag7_pct_change_with_events.png
+
+# Equivalente por módulo: python -m eda.plot_orders_events --lag7-pct-change --no-show -o reports/eda/plots/orders_lag7_pct_change.png
+
+# Media de y_true en un JSONL de predicciones por fila (p. ej. validación TFT)
+python scripts/mean_y_true.py reports/eda/models/tft.prediction.example.jsonl

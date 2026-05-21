@@ -126,7 +126,7 @@ def run_training_dag(
         target_col=target_col,
         val_ratio=val_ratio,
         random_state=random_state,
-        log_mlflow=False,
+        log_mlflow=True,
         hyperparameters=hyperparameters,
     )
 

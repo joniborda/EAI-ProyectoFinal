@@ -341,14 +341,14 @@ def _grid_search_series_model(
                 val_ratio=val_ratio,
                 output_dir=run_dir,
                 random_state=random_state,
-                max_encoder_length=int(hyperparameters.get("tft_max_encoder_length", 28)),
-                max_epochs=int(hyperparameters.get("tft_max_epochs", 10)),
+                max_encoder_length=int(hyperparameters.get("tft_max_encoder_length", 42)),
+                max_epochs=int(hyperparameters.get("tft_max_epochs", 20)),
                 batch_size=int(hyperparameters.get("tft_batch_size", 32)),
-                learning_rate=float(hyperparameters.get("tft_learning_rate", 0.01)),
-                hidden_size=int(hyperparameters.get("tft_hidden_size", 16)),
-                attention_head_size=int(hyperparameters.get("tft_attention_head_size", 1)),
+                learning_rate=float(hyperparameters.get("tft_learning_rate", 0.003)),
+                hidden_size=int(hyperparameters.get("tft_hidden_size", 64)),
+                attention_head_size=int(hyperparameters.get("tft_attention_head_size", 2)),
                 dropout=float(hyperparameters.get("tft_dropout", 0.1)),
-                hidden_continuous_size=int(hyperparameters.get("tft_hidden_continuous_size", 4)),
+                hidden_continuous_size=int(hyperparameters.get("tft_hidden_continuous_size", 8)),
             )
         raise ValueError(f"Modelo no soportado para series: {model_name}")
 

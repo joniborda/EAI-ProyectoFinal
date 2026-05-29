@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import warnings
 from collections.abc import Iterator
@@ -90,6 +91,30 @@ def _neuralprophet_torch_unsafe_weights() -> Iterator[None]:
         yield
     finally:
         torch.load = orig  # type: ignore[method-assign]
+
+
+@contextlib.contextmanager
+def suppress_sklearn_feature_name_warning() -> Iterator[None]:
+    """
+    NeuralProphet usa StandardScaler de sklearn con DataFrame al fit y ndarray al predict.
+    Lightning puede redirigir warnings al logger ``py.warnings``; se silencian ambos caminos.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="X does not have valid feature names, but StandardScaler was fitted with feature names",
+            category=UserWarning,
+        )
+        warnings.filterwarnings("ignore", category=UserWarning, module=r"sklearn\..*")
+        warnings_logger = logging.getLogger("py.warnings")
+        prev_disabled = warnings_logger.disabled
+        prev_level = warnings_logger.level
+        warnings_logger.disabled = True
+        try:
+            yield
+        finally:
+            warnings_logger.disabled = prev_disabled
+            warnings_logger.setLevel(prev_level)
 
 
 def _ensure_dir(path: Path) -> None:
@@ -303,6 +328,155 @@ def _fill_series_for_model(series: pd.Series) -> pd.Series:
     return filled.ffill().bfill()
 
 
+_TFT_KNOWN_REALS = ("time_idx", "adSpend", "event_start", "event_start_next_1")
+TFT_ADSPEND_SCALE_FILENAME = "temporal_fusion_transformer_adspend_scale.json"
+
+
+def _fit_tft_adspend_scale(ad_spend: pd.Series) -> dict[str, float]:
+    log_vals = np.log1p(pd.to_numeric(ad_spend, errors="coerce").fillna(0.0).astype(float))
+    log_std = float(log_vals.std())
+    return {
+        "transform": "log1p_standardize",
+        "log_mean": float(log_vals.mean()),
+        "log_std": log_std if log_std > 0 else 1.0,
+    }
+
+
+def _apply_tft_adspend_scale(data: pd.DataFrame, scale: dict[str, float]) -> pd.DataFrame:
+    data = data.copy()
+    log_vals = np.log1p(pd.to_numeric(data["adSpend"], errors="coerce").fillna(0.0).astype(float))
+    data["adSpend"] = (log_vals - scale["log_mean"]) / scale["log_std"]
+    return data
+
+
+def _load_tft_adspend_scale(path: Path) -> dict[str, float] | None:
+    if not path.is_file():
+        return None
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def tft_adspend_scale_path_for_ckpt(ckpt_path: Path) -> Path:
+    return ckpt_path.parent / TFT_ADSPEND_SCALE_FILENAME
+
+
+def _scale_tft_adspend_for_training(
+    data: pd.DataFrame,
+    training_cutoff: int,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    train_mask = data["time_idx"] <= training_cutoff
+    scale = _fit_tft_adspend_scale(data.loc[train_mask, "adSpend"])
+    return _apply_tft_adspend_scale(data, scale), scale
+
+
+def _daily_feature_covariates(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrega covariables diarias conocidas para TFT desde features.jsonl."""
+    if "created" not in df.columns:
+        return pd.DataFrame(columns=["created", "adSpend", "event_start"])
+
+    work = df.copy()
+    work["created"] = pd.to_datetime(work["created"], errors="coerce").dt.floor("D")
+    work = work.dropna(subset=["created"])
+    if work.empty:
+        return pd.DataFrame(columns=["created", "adSpend", "event_start"])
+
+    agg: dict[str, str] = {}
+    if "adSpend" in work.columns:
+        work["adSpend"] = pd.to_numeric(work["adSpend"], errors="coerce")
+        agg["adSpend"] = "sum"
+    if "event_start" in work.columns:
+        work["event_start"] = pd.to_numeric(work["event_start"], errors="coerce")
+        agg["event_start"] = "max"
+
+    if not agg:
+        out = pd.DataFrame({"created": sorted(work["created"].unique())})
+        out["adSpend"] = 0.0
+        out["event_start"] = 0.0
+        return out
+
+    out = work.groupby("created", as_index=False).agg(agg)
+    if "adSpend" not in out.columns:
+        out["adSpend"] = 0.0
+    else:
+        out["adSpend"] = out["adSpend"].fillna(0.0)
+    if "event_start" not in out.columns:
+        out["event_start"] = 0.0
+    else:
+        out["event_start"] = out["event_start"].fillna(0.0)
+    return out
+
+
+def _attach_tft_known_covariates(data: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+    data = data.copy()
+    data["created"] = pd.to_datetime(data["created"], errors="coerce").dt.floor("D")
+    cov = _daily_feature_covariates(df)
+    drop_cols = [c for c in ("adSpend", "event_start", "event_start_next_1") if c in data.columns]
+    if drop_cols:
+        data = data.drop(columns=drop_cols)
+    data = data.merge(cov, on="created", how="left")
+    data["adSpend"] = pd.to_numeric(data["adSpend"], errors="coerce").fillna(0.0).astype(float)
+    data["event_start"] = pd.to_numeric(data["event_start"], errors="coerce").fillna(0.0).astype(float)
+    data["event_start_next_1"] = data["event_start"].shift(-1).fillna(0.0).astype(float)
+    return data
+
+
+def _finalize_tft_frame(data: pd.DataFrame, target_col: str) -> pd.DataFrame:
+    data = data.copy()
+    data["created"] = pd.to_datetime(data["created"], errors="coerce").dt.floor("D")
+    data["time_idx"] = np.arange(len(data), dtype=int)
+    data["series_id"] = "main"
+    data["month"] = data["created"].dt.month.astype(str).astype("category")
+    data["weekday"] = data["created"].dt.weekday.astype(str).astype("category")
+    data[target_col] = pd.to_numeric(data[target_col], errors="coerce").ffill().bfill().fillna(0.0)
+    data["adSpend"] = pd.to_numeric(data["adSpend"], errors="coerce").fillna(0.0).astype(float)
+    data["event_start"] = pd.to_numeric(data["event_start"], errors="coerce").fillna(0.0).astype(float)
+    data["event_start_next_1"] = data["event_start"].shift(-1).fillna(0.0).astype(float)
+    return data
+
+
+def _prepare_tft_dataframe(
+    df: pd.DataFrame,
+    target_col: str,
+    *,
+    val_ratio: float | None = None,
+) -> pd.DataFrame:
+    raw_series = _prepare_target_series(df, target_col=target_col)
+    if val_ratio is not None:
+        train_series, val_series = _split_series(raw_series, val_ratio=val_ratio)
+        series = pd.concat(
+            [
+                _fill_series_for_model(train_series),
+                _fill_series_for_model(val_series),
+            ]
+        )
+    else:
+        series = _fill_series_for_model(raw_series)
+
+    data = series.reset_index()
+    data.columns = ["created", target_col]
+    data = _attach_tft_known_covariates(data, df)
+    return _finalize_tft_frame(data, target_col)
+
+
+def _tft_dataset_common_params(target_col: str, max_encoder_length: int) -> dict[str, Any]:
+    return {
+        "time_idx": "time_idx",
+        "target": target_col,
+        "group_ids": ["series_id"],
+        "min_encoder_length": max_encoder_length // 2,
+        "max_encoder_length": max_encoder_length,
+        "min_prediction_length": 1,
+        "max_prediction_length": 1,
+        "static_categoricals": ["series_id"],
+        "time_varying_known_categoricals": ["month", "weekday"],
+        "time_varying_known_reals": list(_TFT_KNOWN_REALS),
+        "time_varying_unknown_reals": [target_col],
+        "add_relative_time_idx": True,
+        "add_target_scales": True,
+        "add_encoder_length": True,
+    }
+
+
 class TrailingMeanWeekdayMedianBaseline:
     """
     Modelo base que mezcla inercia reciente (TM7) y estacionalidad semanal (SW8).
@@ -467,15 +641,9 @@ def _train_neuralprophet(
     if "neuralprophet_learning_rate" in hp:
         model_kwargs["learning_rate"] = _hp_float(hp, "neuralprophet_learning_rate", 0.05)
     model = NeuralProphet(**model_kwargs)
-    with _neuralprophet_torch_unsafe_weights():
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="X does not have valid feature names, but StandardScaler was fitted with feature names",
-                category=UserWarning,
-            )
-            model.fit(train_df, freq="D")
-            forecast = model.predict(val_df)
+    with _neuralprophet_torch_unsafe_weights(), suppress_sklearn_feature_name_warning():
+        model.fit(train_df, freq="D")
+        forecast = model.predict(val_df)
     metrics = _evaluate_predictions(val_df["y"].to_numpy(), forecast["yhat1"].to_numpy())
     if error_rows is not None:
         _extend_prediction_error_rows(
@@ -707,42 +875,18 @@ def _train_temporal_fusion_transformer(
         raise RuntimeError("; ".join(missing))
 
     torch.manual_seed(random_state)
-    raw_series = _prepare_target_series(df, target_col=target_col)
-    train_series, val_series = _split_series(raw_series, val_ratio=val_ratio)
-    series = pd.concat(
-        [
-            _fill_series_for_model(train_series),
-            _fill_series_for_model(val_series),
-        ]
-    )
-    data = series.reset_index()
-    data.columns = ["created", target_col]
-    data["time_idx"] = np.arange(len(data), dtype=int)
-    data["series_id"] = "main"
-    data["month"] = data["created"].dt.month.astype(str).astype("category")
-    data["weekday"] = data["created"].dt.weekday.astype(str).astype("category")
+    data = _prepare_tft_dataframe(df, target_col=target_col, val_ratio=val_ratio)
 
     split_idx = int(len(data) * (1 - val_ratio))
     if split_idx <= max_encoder_length:
         raise ValueError("No hay suficientes filas para entrenar TFT con max_encoder_length=28.")
     training_cutoff = split_idx - 1
+    data, adspend_scale = _scale_tft_adspend_for_training(data, training_cutoff)
+    _atomic_write_json(output_dir / TFT_ADSPEND_SCALE_FILENAME, adspend_scale)
 
     training = TimeSeriesDataSet(
         data[lambda x: x.time_idx <= training_cutoff],
-        time_idx="time_idx",
-        target=target_col,
-        group_ids=["series_id"],
-        min_encoder_length=max_encoder_length // 2,
-        max_encoder_length=max_encoder_length,
-        min_prediction_length=1,
-        max_prediction_length=1,
-        static_categoricals=["series_id"],
-        time_varying_known_categoricals=["month", "weekday"],
-        time_varying_known_reals=["time_idx"],
-        time_varying_unknown_reals=[target_col],
-        add_relative_time_idx=True,
-        add_target_scales=True,
-        add_encoder_length=True,
+        **_tft_dataset_common_params(target_col, max_encoder_length),
     )
     validation = TimeSeriesDataSet.from_dataset(
         training,
@@ -961,14 +1105,14 @@ def compare_models(
                     val_ratio=val_ratio,
                     output_dir=output_base,
                     random_state=random_state,
-                    max_encoder_length=_hp_int(hp, "tft_max_encoder_length", 28),
-                    max_epochs=_hp_int(hp, "tft_max_epochs", 10),
+                    max_encoder_length=_hp_int(hp, "tft_max_encoder_length", 42),
+                    max_epochs=_hp_int(hp, "tft_max_epochs", 20),
                     batch_size=_hp_int(hp, "tft_batch_size", 32),
-                    learning_rate=_hp_float(hp, "tft_learning_rate", 0.01),
-                    hidden_size=_hp_int(hp, "tft_hidden_size", 16),
-                    attention_head_size=_hp_int(hp, "tft_attention_head_size", 1),
+                    learning_rate=_hp_float(hp, "tft_learning_rate", 0.003),
+                    hidden_size=_hp_int(hp, "tft_hidden_size", 64),
+                    attention_head_size=_hp_int(hp, "tft_attention_head_size", 2),
                     dropout=_hp_float(hp, "tft_dropout", 0.1),
-                    hidden_continuous_size=_hp_int(hp, "tft_hidden_continuous_size", 4),
+                    hidden_continuous_size=_hp_int(hp, "tft_hidden_continuous_size", 8),
                     error_rows=error_rows,
                 )
             except Exception as exc:

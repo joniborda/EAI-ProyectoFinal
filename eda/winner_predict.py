@@ -16,9 +16,15 @@ from eda.train import (
     TemporalFusionTransformer,
     TimeSeriesDataSet,
     TrailingMeanWeekdayMedianBaseline,
+    _apply_tft_adspend_scale,
+    _finalize_tft_frame,
     _hp_int,
+    _load_tft_adspend_scale,
     _prepare_target_series,
-    _fill_series_for_model,
+    _prepare_tft_dataframe,
+    _tft_dataset_common_params,
+    suppress_sklearn_feature_name_warning,
+    tft_adspend_scale_path_for_ckpt,
     torch,
     xgb,
     nn,
@@ -438,7 +444,8 @@ def _predict_neuralprophet(model: Any, first_day: date, days: int) -> list[dict[
     future_df = model.make_future_dataframe(
         hist_df, periods=int(total_periods), n_historic_predictions=False
     )
-    forecast = model.predict(future_df)
+    with suppress_sklearn_feature_name_warning():
+        forecast = model.predict(future_df)
     ds_norm = pd.to_datetime(forecast["ds"]).dt.normalize()
     sel = forecast[ds_norm >= first_ts].head(int(days))
     if len(sel) < days:
@@ -451,6 +458,64 @@ def _predict_neuralprophet(model: Any, first_day: date, days: int) -> list[dict[
     return daily
 
 
+def _tft_covariates_for_day(
+    target_day: date,
+    last_ad_spend: float,
+    *,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
+) -> tuple[float, float]:
+    if future_ad_spend and target_day in future_ad_spend:
+        ad_spend = float(future_ad_spend[target_day])
+    else:
+        ad_spend = last_ad_spend
+    if future_events is not None:
+        ev = float(future_events.get(target_day, 0.0))
+        event_start = 1.0 if ev >= 0.5 else 0.0
+    else:
+        event_start = 0.0
+    return ad_spend, event_start
+
+
+def _append_tft_future_row(
+    data: pd.DataFrame,
+    target_col: str,
+    next_date: pd.Timestamp,
+    *,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
+    y_placeholder: float | None = None,
+) -> pd.DataFrame:
+    target_day = next_date.date()
+    last_ad = float(data["adSpend"].iloc[-1]) if "adSpend" in data.columns else 0.0
+    ad_spend, event_start = _tft_covariates_for_day(
+        target_day,
+        last_ad,
+        future_ad_spend=future_ad_spend,
+        future_events=future_events,
+    )
+    if y_placeholder is None:
+        y_placeholder = float(pd.to_numeric(data[target_col], errors="coerce").iloc[-1])
+    if not np.isfinite(y_placeholder):
+        y_placeholder = 0.0
+
+    extended = pd.concat(
+        [
+            data,
+            pd.DataFrame(
+                {
+                    "created": [next_date],
+                    target_col: [y_placeholder],
+                    "adSpend": [ad_spend],
+                    "event_start": [event_start],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    return _finalize_tft_frame(extended, target_col)
+
+
 def _predict_tft(
     df_features: pd.DataFrame,
     target_col: str,
@@ -458,6 +523,9 @@ def _predict_tft(
     hp: dict[str, Any],
     first_day: date,
     days: int,
+    *,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
 ) -> list[dict[str, Any]]:
     if torch is None or TemporalFusionTransformer is None or TimeSeriesDataSet is None:
         raise RuntimeError("PyTorch Forecasting / PyTorch no está disponible para TFT.")
@@ -465,9 +533,9 @@ def _predict_tft(
     max_encoder_length = _hp_int(hp, "tft_max_encoder_length", 28)
     batch_size = max(1, _hp_int(hp, "tft_batch_size", 32))
 
-    raw_series = _prepare_target_series(df_features, target_col=target_col)
-    work = _fill_series_for_model(raw_series).copy()
-    last_hist = pd.Timestamp(work.index.max()).normalize().date()
+    data = _prepare_tft_dataframe(df_features, target_col=target_col)
+    adspend_scale = _load_tft_adspend_scale(tft_adspend_scale_path_for_ckpt(ckpt_path))
+    last_hist = pd.Timestamp(data["created"].max()).normalize().date()
     if first_day <= last_hist:
         raise ValueError("start_date debe ser posterior al último día de la serie usada para TFT.")
 
@@ -480,68 +548,36 @@ def _predict_tft(
 
     gap = (first_day - last_hist).days - 1
     for _ in range(gap):
-        next_fill = pd.Timestamp(work.index.max()) + pd.Timedelta(days=1)
-        work.loc[next_fill] = float(work.iloc[-1])
-        work = work.sort_index()
+        next_date = pd.Timestamp(data["created"].max()) + pd.Timedelta(days=1)
+        data = _append_tft_future_row(
+            data,
+            target_col,
+            next_date,
+            future_ad_spend=future_ad_spend,
+            future_events=future_events,
+        )
 
     for _ in range(days):
-        data = work.reset_index()
-        data.columns = ["created", target_col]
-        data["time_idx"] = np.arange(len(data), dtype=int)
-        data["series_id"] = "main"
-        data["month"] = data["created"].dt.month.astype(str)
-        data["weekday"] = data["created"].dt.weekday.astype(str)
-
-        next_date = pd.Timestamp(work.index.max()) + pd.Timedelta(days=1)
-        # TFT / TimeSeriesDataSet no permiten NaN en el target; placeholder = último valor observado.
-        y_placeholder = float(pd.to_numeric(data[target_col], errors="coerce").iloc[-1])
-        if not np.isfinite(y_placeholder):
-            y_placeholder = 0.0
-        ext = pd.concat(
-            [
-                data,
-                pd.DataFrame(
-                    {
-                        "created": [next_date],
-                        target_col: [y_placeholder],
-                    }
-                ),
-            ],
-            ignore_index=True,
+        next_date = pd.Timestamp(data["created"].max()) + pd.Timedelta(days=1)
+        ext = _append_tft_future_row(
+            data,
+            target_col,
+            next_date,
+            future_ad_spend=future_ad_spend,
+            future_events=future_events,
         )
-        ext["time_idx"] = np.arange(len(ext), dtype=int)
-        ext["series_id"] = "main"
-        ext["month"] = ext["created"].dt.month.astype(str)
-        ext["weekday"] = ext["created"].dt.weekday.astype(str)
-        ext[target_col] = pd.to_numeric(ext[target_col], errors="coerce").ffill().bfill().fillna(0.0)
 
         training_cutoff = len(data) - 1
         sub = ext[lambda x: x.time_idx <= training_cutoff].copy()
-        sub["month"] = sub["month"].astype(str).astype("category")
-        sub["weekday"] = sub["weekday"].astype(str).astype("category")
-        ext["month"] = ext["month"].astype(str).astype("category")
-        ext["weekday"] = ext["weekday"].astype(str).astype("category")
-
+        sub_model = _apply_tft_adspend_scale(sub, adspend_scale) if adspend_scale else sub
+        ext_model = _apply_tft_adspend_scale(ext, adspend_scale) if adspend_scale else ext
         training_ds = TimeSeriesDataSet(
-            sub,
-            time_idx="time_idx",
-            target=target_col,
-            group_ids=["series_id"],
-            min_encoder_length=max_encoder_length // 2,
-            max_encoder_length=max_encoder_length,
-            min_prediction_length=1,
-            max_prediction_length=1,
-            static_categoricals=["series_id"],
-            time_varying_known_categoricals=["month", "weekday"],
-            time_varying_known_reals=["time_idx"],
-            time_varying_unknown_reals=[target_col],
-            add_relative_time_idx=True,
-            add_target_scales=True,
-            add_encoder_length=True,
+            sub_model,
+            **_tft_dataset_common_params(target_col, max_encoder_length),
         )
         val_ds = TimeSeriesDataSet.from_dataset(
             training_ds,
-            ext,
+            ext_model,
             min_prediction_idx=len(data),
             stop_randomization=True,
         )
@@ -550,8 +586,9 @@ def _predict_tft(
             p = model.predict(loader).detach().cpu().numpy().reshape(-1)
         pred = float(p[0]) if len(p) else float("nan")
         daily.append({"date": next_date.date().isoformat(), "prediction": round(pred, 2)})
-        work.loc[next_date] = pred
-        work = work.sort_index()
+        data = ext.copy()
+        data.loc[data.index[-1], target_col] = pred
+        data = _finalize_tft_frame(data, target_col)
 
     return daily
 
@@ -569,8 +606,9 @@ def predict_winner(
     """
     Predicción multi-día según best_model.json + artefactos en model_output_dir.
 
-    future_ad_spend / future_events: solo aplican a modelos basados en ventana
-    (linear_regression, ridge, random_forest, catboost, xgboost, lstm).
+    future_ad_spend / future_events: aplican a modelos basados en ventana
+    (linear_regression, ridge, random_forest, catboost, xgboost, lstm) y al TFT
+    (adSpend, event_start, event_start_next_1 como covariables conocidas).
     """
     out_dir = Path(model_output_dir)
     best, meta = load_training_artifacts(out_dir)
@@ -660,7 +698,16 @@ def predict_winner(
         daily = _predict_neuralprophet(m, first, days)
 
     elif model_name == "temporal_fusion_transformer":
-        daily = _predict_tft(df, target_col, model_path, hp, first, days)
+        daily = _predict_tft(
+            df,
+            target_col,
+            model_path,
+            hp,
+            first,
+            days,
+            future_ad_spend=ad_map,
+            future_events=ev_map,
+        )
 
     else:
         raise ValueError(f"Modelo ganador no soportado para inferencia: {model_name}")
@@ -686,6 +733,7 @@ def predict_winner(
                 "catboost",
                 "xgboost",
                 "lstm",
+                "temporal_fusion_transformer",
             }
         ),
     }

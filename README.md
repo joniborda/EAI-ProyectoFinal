@@ -334,3 +334,35 @@ python -m eda.cli plot-orders-lag7-pct-change --group-months 3 --no-show \
 
 # Media de y_true en un JSONL de predicciones por fila (p. ej. validación TFT)
 python scripts/mean_y_true.py reports/eda/models/tft.prediction.example.jsonl
+
+## Scripts auxiliares
+
+### Importancia de variables (modelo ya entrenado)
+
+Requiere `reports/eda/models/metadata.json` y un artefacto `.joblib` / `xgboost.json`.
+Soporta: `random_forest`, `xgboost`, `catboost`, `ridge`, `linear_regression`.
+Las ventanas de 28 días se agregan por nombre de feature (suma de importancia en el tiempo).
+
+```bash
+# Usa best_model.json si no pasás --model-name
+python scripts/feature_importance.py \
+  --model-name random_forest \
+  --top 15 \
+  --output-path reports/eda/plots/feature_importance_random_forest.png \
+  --csv-path reports/eda/plots/feature_importance_random_forest.csv
+```
+
+Si el ganador es TFT/LSTM/NeuralProphet, indicá explícitamente un modelo tabular, p. ej. `--model-name catboost`.
+
+### Interpretabilidad TFT (Temporal Fusion Transformer)
+
+Requiere `temporal_fusion_transformer.ckpt` o `best_model.ckpt` (si el ganador es TFT),
+`features.jsonl` y `metadata.json`. Usa `interpret_output` de pytorch-forecasting
+sobre el tramo de validación (variables: `orders`, `month`, `weekday`, `time_idx`, …).
+
+```bash
+python scripts/tft_feature_importance.py \
+  --output-dir reports/eda/plots/tft_interpretation
+```
+
+PNG por bloque (encoder, decoder, atención, …) y CSV en el mismo directorio.

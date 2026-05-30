@@ -163,6 +163,51 @@ def _ensure_feature_frame(extended: pd.DataFrame, feature_columns: list[str], ta
             extended[col] = 0.0 if col != target_col else np.nan
 
 
+def _last_panel_date(extended: pd.DataFrame) -> date:
+    if "created" not in extended.columns or extended.empty:
+        raise ValueError("El panel de features no tiene filas con columna created.")
+    return pd.Timestamp(extended["created"].iloc[-1]).normalize().date()
+
+
+def _extend_panel_to_day_before(
+    extended: pd.DataFrame,
+    first_day: date,
+    target_col: str,
+    feature_columns: list[str],
+    *,
+    future_ad_spend: Mapping[date, float] | None = None,
+    future_events: Mapping[date, float] | None = None,
+) -> None:
+    """Rellena días faltantes día a día hasta first_day (exclusivo) para lags/recursión."""
+    d = _last_panel_date(extended) + timedelta(days=1)
+    while d < first_day:
+        _append_future_row_recursive(
+            extended,
+            d,
+            target_col,
+            feature_columns,
+            future_ad_spend=future_ad_spend,
+            future_events=future_events,
+        )
+        d += timedelta(days=1)
+
+
+def _resolve_prediction_start(
+    series: pd.Series,
+    from_day: date | None,
+) -> tuple[date, date]:
+    """Devuelve (first_day, series_last_date)."""
+    series_last = pd.Timestamp(series.index.max()).normalize().date()
+    first = from_day or (series_last + timedelta(days=1))
+    min_from = series_last + timedelta(days=1)
+    if first < min_from:
+        raise ValueError(
+            f"from debe ser >= {min_from.isoformat()} "
+            f"(día siguiente al último dato en features.jsonl; último={series_last.isoformat()})."
+        )
+    return first, series_last
+
+
 def _append_future_row_recursive(
     extended: pd.DataFrame,
     target_day: date,
@@ -244,6 +289,14 @@ def _predict_window_sklearn(
     future_ad_spend: Mapping[date, float] | None = None,
     future_events: Mapping[date, float] | None = None,
 ) -> list[dict[str, Any]]:
+    _extend_panel_to_day_before(
+        extended,
+        first_day,
+        target_col,
+        feature_columns,
+        future_ad_spend=future_ad_spend,
+        future_events=future_events,
+    )
     daily: list[dict[str, Any]] = []
     for offset in range(days):
         target_d = first_day + timedelta(days=offset)
@@ -286,6 +339,14 @@ def _predict_xgboost(
         raise RuntimeError("XGBoost no está instalado.")
     booster = xgb.XGBRegressor()
     booster.load_model(str(model_path))
+    _extend_panel_to_day_before(
+        extended,
+        first_day,
+        target_col,
+        feature_columns,
+        future_ad_spend=future_ad_spend,
+        future_events=future_events,
+    )
     daily: list[dict[str, Any]] = []
     for offset in range(days):
         target_d = first_day + timedelta(days=offset)
@@ -355,11 +416,19 @@ def _predict_lstm(
     net = _lstm_module_class(input_size, hidden_size, num_layers, dropout).to(device)
     net.load_state_dict(bundle["model_state_dict"])
     net.eval()
-    daily: list[dict[str, Any]] = []
     x_mean = np.asarray(scalers["x_mean"], dtype=np.float64)
     x_std = np.asarray(scalers["x_std"], dtype=np.float64)
     y_mean = float(scalers["y_mean"])
     y_std = float(scalers["y_std"])
+    _extend_panel_to_day_before(
+        extended,
+        first_day,
+        target_col,
+        feature_columns,
+        future_ad_spend=future_ad_spend,
+        future_events=future_events,
+    )
+    daily: list[dict[str, Any]] = []
     for offset in range(days):
         target_d = first_day + timedelta(days=offset)
         _append_future_row_recursive(
@@ -400,7 +469,7 @@ def _predict_sarima(fitted: Any, first_day: date, days: int) -> list[dict[str, A
     horizon_end = first_day + timedelta(days=days - 1)
     total_steps = (horizon_end - last).days
     if total_steps < 1:
-        raise ValueError("start_date debe ser posterior al último día visto por el modelo SARIMA.")
+        raise ValueError("from debe ser posterior al último día visto por el modelo SARIMA.")
     fc = fitted.get_forecast(steps=total_steps)
     means = np.asarray(fc.predicted_mean, dtype=float)
     pred_dates = [last + timedelta(days=i) for i in range(1, total_steps + 1)]
@@ -417,7 +486,7 @@ def _predict_exponential_smoothing(fitted: Any, first_day: date, days: int) -> l
     horizon_end = first_day + timedelta(days=days - 1)
     total_steps = (horizon_end - last).days
     if total_steps < 1:
-        raise ValueError("start_date debe ser posterior al último día del suavizado exponencial.")
+        raise ValueError("from debe ser posterior al último día del suavizado exponencial.")
     preds = fitted.forecast(steps=total_steps)
     arr = preds.to_numpy() if hasattr(preds, "to_numpy") else np.asarray(preds, dtype=float)
     pred_dates = [last + timedelta(days=i) for i in range(1, total_steps + 1)]
@@ -440,7 +509,7 @@ def _predict_neuralprophet(model: Any, first_day: date, days: int) -> list[dict[
     horizon_end = first_ts + pd.Timedelta(days=days - 1)
     total_periods = (horizon_end - last_hist).days
     if total_periods < 1:
-        raise ValueError("start_date debe ser posterior al último día de entrenamiento de NeuralProphet.")
+        raise ValueError("from debe ser posterior al último día de entrenamiento de NeuralProphet.")
     future_df = model.make_future_dataframe(
         hist_df, periods=int(total_periods), n_historic_predictions=False
     )
@@ -537,7 +606,9 @@ def _predict_tft(
     adspend_scale = _load_tft_adspend_scale(tft_adspend_scale_path_for_ckpt(ckpt_path))
     last_hist = pd.Timestamp(data["created"].max()).normalize().date()
     if first_day <= last_hist:
-        raise ValueError("start_date debe ser posterior al último día de la serie usada para TFT.")
+        raise ValueError(
+            f"from debe ser posterior al último día de la serie usada para TFT ({last_hist.isoformat()})."
+        )
 
     model = TemporalFusionTransformer.load_from_checkpoint(
         str(ckpt_path),
@@ -606,6 +677,10 @@ def predict_winner(
     """
     Predicción multi-día según best_model.json + artefactos en model_output_dir.
 
+    first_day: primer día a predecir (API: query param ``from``). Si es None, usa el día
+    siguiente al último dato en features.jsonl. Puede ser posterior (gap) si el panel está
+    desactualizado.
+
     future_ad_spend / future_events: aplican a modelos basados en ventana
     (linear_regression, ridge, random_forest, catboost, xgboost, lstm) y al TFT
     (adSpend, event_start, event_start_next_1 como covariables conocidas).
@@ -618,9 +693,9 @@ def predict_winner(
     ad_map: Mapping[date, float] | None = future_ad_spend if future_ad_spend else None
     ev_map: Mapping[date, float] | None = future_events if future_events else None
 
-    df = _read_features_df(Path(series_path), target_col)
+    df = _read_features_df(Path(series_path), target_col=target_col)
     series = _prepare_target_series(df, target_col=target_col)
-    first = first_day or (pd.Timestamp(series.index.max()).date() + timedelta(days=1))
+    first, series_last = _resolve_prediction_start(series, first_day)
 
     model_path = out_dir / best.get("promoted_model_filename", "")
     if not model_path.exists():
@@ -720,6 +795,7 @@ def predict_winner(
         "metric_value": best.get("metric_value"),
         "target_col": target_col,
         "from": first.isoformat(),
+        "series_last_date": series_last.isoformat(),
         "days": days,
         "daily": daily,
         "future_ad_spend_provided": bool(ad_map),

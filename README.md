@@ -30,8 +30,8 @@ curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 curl -X POST http://localhost:8080/train
 curl http://localhost:8080/best-model
-curl "http://localhost:8080/predict?days=7"
-curl "http://localhost:8080/predict/baseline?days=7"
+curl "http://localhost:8080/predict?from=2026-05-22&days=7"
+curl "http://localhost:8080/predict/baseline?from=2026-05-22&days=7"
 ```
 
 El servicio `trainer` ejecuta `python -m eda.cli training-dag` una vez. El DAG entrena los modelos, compara las métricas, elige el ganador según `SELECTION_METRIC` (`mae` por defecto) y promueve el artefacto a `reports/eda/models/best_model.*` junto con `reports/eda/models/best_model.json`. Si `MLFLOW_TRACKING_URI` está definido, registra métricas y artefactos en MLflow.

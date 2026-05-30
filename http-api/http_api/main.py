@@ -176,7 +176,16 @@ def best_model(
 
 @app.get("/predict")
 def predict(
-    start_date: date | None = Query(default=None),
+    from_date: date | None = Query(
+        default=None,
+        alias="from",
+        description="Primer día a predecir (YYYY-MM-DD). Si se omite, usa el día siguiente al último dato en features.jsonl.",
+    ),
+    start_date: date | None = Query(
+        default=None,
+        deprecated=True,
+        description="Alias legacy de from; preferí el parámetro from.",
+    ),
     days: int = Query(default=1, ge=1, le=365),
     model_output_dir: str = Query(default=str(DEFAULT_MODEL_OUTPUT_DIR)),
     series_path: str = Query(default=str(DEFAULT_FEATURES_PATH)),
@@ -191,7 +200,7 @@ def predict(
     ),
 ) -> dict[str, Any]:
     series = _read_features(Path(series_path), target_col=target_col)
-    first_day = start_date or _next_date_after(series)
+    first_day = from_date or start_date or _next_date_after(series)
     ad_map = _parse_json_date_value_list(future_ad_spend, "future_ad_spend")
     ev_map = _parse_json_date_value_list(future_events, "future_events")
     try:
@@ -216,13 +225,28 @@ def predict(
 
 @app.get("/predict/baseline")
 def predict_baseline(
-    start_date: date | None = Query(default=None),
+    from_date: date | None = Query(
+        default=None,
+        alias="from",
+        description="Primer día a predecir (YYYY-MM-DD).",
+    ),
+    start_date: date | None = Query(default=None, deprecated=True),
     days: int = Query(default=1, ge=1, le=365),
     series_path: str = Query(default=str(DEFAULT_FEATURES_PATH)),
     target_col: str = Query(default=DEFAULT_TARGET_COL),
 ) -> dict[str, Any]:
     series = _read_features(Path(series_path), target_col=target_col)
-    first_day = start_date or _next_date_after(series)
+    series_last = pd.Timestamp(series.index.max()).date()
+    first_day = from_date or start_date or _next_date_after(series)
+    min_from = series_last + timedelta(days=1)
+    if first_day < min_from:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"from debe ser >= {min_from.isoformat()} "
+                f"(último dato en features: {series_last.isoformat()})."
+            ),
+        )
 
     model = TrailingMeanWeekdayMedianBaseline().fit(series)
     daily: list[dict[str, Any]] = []
@@ -251,6 +275,7 @@ def predict_baseline(
     return {
         "target_col": target_col,
         "from": first_day.isoformat(),
+        "series_last_date": series_last.isoformat(),
         "days": days,
         "method": "0.45 * trailing_mean_7 + 0.55 * same_weekday_median_8w",
         "daily": daily,

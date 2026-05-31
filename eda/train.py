@@ -513,14 +513,17 @@ class TrailingMeanWeekdayMedianBaseline:
     def components_for(self, target_date: Any) -> dict[str, float | None]:
         series = self._require_fitted()
         target = pd.Timestamp(target_date).floor("D")
+        last_obs = pd.Timestamp(series.index.max()).floor("D")
+        # Si el target cae después del último dato observado, anclar lookbacks al fin de la serie.
+        anchor = last_obs + pd.Timedelta(days=1) if target > last_obs else target
 
-        trailing_start = target - pd.Timedelta(days=self.trailing_days)
-        trailing_values = series[(series.index >= trailing_start) & (series.index < target)].dropna()
+        trailing_start = anchor - pd.Timedelta(days=self.trailing_days)
+        trailing_values = series[(series.index >= trailing_start) & (series.index < anchor)].dropna()
 
-        weekday_start = target - pd.Timedelta(weeks=self.weekday_weeks)
+        weekday_start = anchor - pd.Timedelta(weeks=self.weekday_weeks)
         weekday_values = series[
             (series.index >= weekday_start)
-            & (series.index < target)
+            & (series.index < anchor)
             & (series.index.weekday == target.weekday())
         ].dropna()
 

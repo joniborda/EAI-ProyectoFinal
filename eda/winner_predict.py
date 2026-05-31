@@ -709,6 +709,7 @@ def predict_winner(
         baseline = joblib.load(model_path)
         if not isinstance(baseline, TrailingMeanWeekdayMedianBaseline):
             raise TypeError("Artefacto baseline inválido.")
+        baseline.fit(series)
         daily = _predict_baseline(baseline, series, first, days)
 
     elif model_name in {"linear_regression", "ridge", "random_forest", "catboost"}:
